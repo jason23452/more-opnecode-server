@@ -10,6 +10,39 @@ import httpx
 import pytest
 
 
+def _wait_for_healthy_container(query, expected_url: str, timeout: float, interval: float) -> dict:
+    deadline = time.monotonic() + timeout
+    last_container = None
+    while time.monotonic() < deadline:
+        last_container = query()
+        if last_container.get("status") == "healthy" and last_container.get("url") == expected_url:
+            return last_container
+        time.sleep(min(interval, max(0, deadline - time.monotonic())))
+    pytest.fail(
+        f"Container did not recover within {timeout}s "
+        f"(expected healthy URL {expected_url!r}; last response: {last_container!r})"
+    )
+
+
+def test_wait_for_healthy_container_retries_until_status_and_url_match() -> None:
+    responses = iter([
+        {"id": "container-1", "status": "unhealthy", "url": "https://new.trycloudflare.com"},
+        {"id": "container-1", "status": "healthy", "url": "https://new.trycloudflare.com"},
+    ])
+    queried = []
+
+    result = _wait_for_healthy_container(
+        lambda: queried.append(True) or next(responses),
+        expected_url="https://new.trycloudflare.com",
+        timeout=1,
+        interval=0,
+    )
+
+    assert result["status"] == "healthy"
+    assert result["url"] == "https://new.trycloudflare.com"
+    assert len(queried) == 2
+
+
 def _assert_tunnel_no_longer_serves(url: str, password: str, timeout: float = 45) -> None:
     deadline = time.monotonic() + timeout
     last_status = None
@@ -130,13 +163,21 @@ def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
         assert recovered_list.status_code == 200, recovered_list.text
         assert payload["id"] in {container["id"] for container in recovered_list.json()}
         rediscovered = next(container for container in recovered_list.json() if container["id"] == payload["id"])
-        assert rediscovered["status"] == "healthy"
         assert rediscovered["url"] == recovered_url
-        recovered_query = httpx.get(
-            base_url + f"/api/opencode/containers/{container_id}", headers=headers, timeout=20
+
+        def query_rediscovered_container() -> dict:
+            response = httpx.get(
+                base_url + f"/api/opencode/containers/{container_id}", headers=headers, timeout=20
+            )
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        _wait_for_healthy_container(
+            query_rediscovered_container,
+            expected_url=recovered_url,
+            timeout=30,
+            interval=1,
         )
-        assert recovered_query.status_code == 200, recovered_query.text
-        assert recovered_query.json()["url"] == recovered_url
 
         deleted = httpx.delete(
             base_url + f"/api/opencode/containers/{container_id}",
