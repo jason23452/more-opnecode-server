@@ -64,3 +64,62 @@ def test_create_opencode_reports_capacity_limit_without_starting_container() -> 
 
     assert response.status_code == 503
     manager.create.assert_called_once()
+
+
+def test_list_opencode_containers_requires_internal_management_token() -> None:
+    response = client.get("/api/opencode/containers")
+
+    assert response.status_code == 401
+
+
+def test_get_opencode_container_requires_internal_management_token() -> None:
+    response = client.get("/api/opencode/containers/oc-123")
+
+    assert response.status_code == 401
+
+
+def test_list_opencode_containers_returns_current_status_and_tunnel_url() -> None:
+    manager = Mock(spec=ContainerManager)
+    manager.list.return_value = [
+        {"id": "oc-123", "status": "healthy", "url": "https://quiet-fox.trycloudflare.com"}
+    ]
+    app.state.container_manager = manager
+    app.state.settings = Settings(opencode_password="shared-secret", opencode_admin_token="admin-secret")
+
+    response = client.get("/api/opencode/containers", headers={"Authorization": "Bearer admin-secret"})
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {"id": "oc-123", "status": "healthy", "url": "https://quiet-fox.trycloudflare.com"}
+    ]
+
+
+def test_get_opencode_container_returns_current_status_and_tunnel_url() -> None:
+    manager = Mock(spec=ContainerManager)
+    manager.get.return_value = {
+        "id": "oc-123", "status": "unhealthy", "url": "https://new-fox.trycloudflare.com"
+    }
+    app.state.container_manager = manager
+    app.state.settings = Settings(opencode_password="shared-secret", opencode_admin_token="admin-secret")
+
+    response = client.get(
+        "/api/opencode/containers/oc-123", headers={"Authorization": "Bearer admin-secret"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": "oc-123", "status": "unhealthy", "url": "https://new-fox.trycloudflare.com"
+    }
+
+
+def test_get_opencode_container_returns_not_found_for_unknown_id() -> None:
+    manager = Mock(spec=ContainerManager)
+    manager.get.return_value = None
+    app.state.container_manager = manager
+    app.state.settings = Settings(opencode_password="shared-secret", opencode_admin_token="admin-secret")
+
+    response = client.get(
+        "/api/opencode/containers/missing", headers={"Authorization": "Bearer admin-secret"}
+    )
+
+    assert response.status_code == 404
