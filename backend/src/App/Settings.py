@@ -11,6 +11,13 @@ class Settings(BaseSettings):
         "http://localhost:3000",
         "http://127.0.0.1:3000",
     ]
+    opencode_password: str = ""
+    opencode_admin_token: str = ""
+    opencode_container_cpu: float = 1.0
+    opencode_container_memory: str = "2g"
+    opencode_max_containers: int = 4
+    opencode_startup_timeout: int = 180
+    opencode_image: str = "dynamic-opencode:latest"
 
     model_config = SettingsConfigDict(
         env_file=".env",

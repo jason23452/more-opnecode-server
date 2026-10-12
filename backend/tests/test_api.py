@@ -1,6 +1,10 @@
+from unittest.mock import Mock
+
 from fastapi.testclient import TestClient
 
 from src.App.Main import app
+from src.App.Settings import Settings
+from src.Features.Opencode.ContainerManager import ContainerManager
 
 client = TestClient(app)
 
@@ -28,3 +32,35 @@ def test_request_id_can_be_provided_by_client() -> None:
     response = client.get("/api/health", headers={"X-Request-ID": "test-request-id"})
 
     assert response.headers["x-request-id"] == "test-request-id"
+
+
+def test_create_opencode_requires_internal_management_token() -> None:
+    response = client.post("/api/opencode/containers")
+
+    assert response.status_code == 401
+
+
+def test_create_opencode_waits_for_ready_container_and_hides_password() -> None:
+    manager = Mock(spec=ContainerManager)
+    manager.create.return_value = {"id": "oc-123", "url": "https://quiet-fox.trycloudflare.com"}
+    app.state.container_manager = manager
+    settings = Settings(opencode_password="shared-secret", opencode_admin_token="admin-secret")
+    app.state.settings = settings
+
+    response = client.post("/api/opencode/containers", headers={"Authorization": "Bearer admin-secret"})
+
+    assert response.status_code == 201
+    assert response.json() == {"id": "oc-123", "url": "https://quiet-fox.trycloudflare.com"}
+    assert "shared-secret" not in response.text
+
+
+def test_create_opencode_reports_capacity_limit_without_starting_container() -> None:
+    manager = Mock(spec=ContainerManager)
+    manager.create.side_effect = RuntimeError("container capacity reached")
+    app.state.container_manager = manager
+    app.state.settings = Settings(opencode_password="shared-secret", opencode_admin_token="admin-secret")
+
+    response = client.post("/api/opencode/containers", headers={"Authorization": "Bearer admin-secret"})
+
+    assert response.status_code == 503
+    manager.create.assert_called_once()

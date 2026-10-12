@@ -51,12 +51,25 @@ src/
 | `API_PREFIX` | `/api` | API 路由前綴 |
 | `DEBUG` | `false` | FastAPI debug 模式 |
 | `FRONTEND_ORIGINS` | `http://localhost:3000` 與 `http://127.0.0.1:3000` | CORS 允許來源，使用 JSON 字串陣列 |
+| `OPENCODE_PASSWORD` | 空字串 | OpenCode 服務共用密碼；未設定時建立容器會失敗 |
+| `OPENCODE_ADMIN_TOKEN` | 空字串 | 管理 API Bearer Token；未設定時管理 API 一律拒絕 |
+| `OPENCODE_CONTAINER_CPU` | `1.0` | 單一容器 CPU 上限 |
+| `OPENCODE_CONTAINER_MEMORY` | `2g` | 單一容器記憶體上限 |
+| `OPENCODE_MAX_CONTAINERS` | `4` | 同時執行容器上限 |
+| `OPENCODE_STARTUP_TIMEOUT` | `180` | OpenCode 與 Quick Tunnel 初始化秒數上限 |
+| `OPENCODE_IMAGE` | `dynamic-opencode:latest` | 固定 OpenCode 容器映像標籤 |
 
 範例：
 
 ```env
 FRONTEND_ORIGINS=["http://localhost:3000","http://127.0.0.1:3000"]
+OPENCODE_PASSWORD=replace-with-a-secret
+OPENCODE_ADMIN_TOKEN=replace-with-an-internal-token
 ```
+
+管理端點 `POST /api/opencode/containers` 需帶 `Authorization: Bearer <OPENCODE_ADMIN_TOKEN>`。成功回傳 `201` 與 `{ "id", "url" }`；若初始化失敗或達容器數量上限，回傳 `503`。API 不回傳 OpenCode 密碼。
+
+真實 Docker/Cloudflare 黑箱測試需可用 Docker daemon 與外網，設定 `OPENCODE_DOCKER_E2E=1` 後執行 `uv run pytest tests/test_opencode_docker_e2e.py -v`。測試會啟動實際後端，呼叫管理 API，使用回傳 URL 及密碼探測 OpenCode，並清理測試容器。
 
 ## 統一錯誤回應
 
