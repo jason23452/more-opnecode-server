@@ -1,5 +1,6 @@
 from unittest.mock import Mock
 from subprocess import CompletedProcess
+import threading
 
 from fastapi.testclient import TestClient
 
@@ -292,6 +293,56 @@ def test_api_status_remains_healthy_until_configured_probe_failure_threshold() -
     assert before_threshold.json()["status"] == "healthy"
     assert first_failure.json()["status"] == "healthy"
     assert second_failure.json()["status"] == "unhealthy"
+
+
+def test_list_and_get_remain_available_while_tunnel_recovery_is_blocked() -> None:
+    manager = ContainerManager(Settings(
+        opencode_password="secret", opencode_tunnel_failure_threshold=1,
+    ))
+    entered_recovery = threading.Event()
+    finish_recovery = threading.Event()
+    queries_finished = threading.Event()
+    query_results: list[tuple[list[dict[str, str]], dict[str, str] | None]] = []
+    monitor = threading.Thread(target=manager.monitor_once)
+    old_url = "https://old.trycloudflare.com"
+    new_url = "https://new.trycloudflare.com"
+    manager._docker = Mock(return_value=CompletedProcess([], 0, "oc-1\n", ""))
+    manager._inspect = Mock(return_value={"id": "oc-1", "status": "healthy", "url": old_url})
+    manager._probe = Mock(return_value=False)
+
+    def blocked_recovery(container_id: str, url: str) -> str:
+        entered_recovery.set()
+        assert finish_recovery.wait(timeout=3)
+        return new_url
+
+    manager._recover_tunnel = blocked_recovery
+    manager._latest_urls["oc-1"] = old_url
+    manager._statuses["oc-1"] = "healthy"
+
+    try:
+        monitor.start()
+        assert entered_recovery.wait(timeout=1)
+
+        def query_manager() -> None:
+            query_results.append((manager.list(), manager.get("oc-1")))
+            queries_finished.set()
+
+        query = threading.Thread(target=query_manager)
+        query.start()
+        assert queries_finished.wait(timeout=0.5), "list/get blocked behind tunnel recovery"
+        query.join(timeout=1)
+        assert query_results == [(
+            [{"id": "oc-1", "status": "healthy", "url": old_url}],
+            {"id": "oc-1", "status": "healthy", "url": old_url},
+        )]
+
+        finish_recovery.set()
+        monitor.join(timeout=1)
+        assert manager.get("oc-1") == {"id": "oc-1", "status": "healthy", "url": new_url}
+    finally:
+        finish_recovery.set()
+        monitor.join(timeout=1)
+        manager.close()
 
 
 def test_container_manager_rejects_creation_at_configured_capacity() -> None:

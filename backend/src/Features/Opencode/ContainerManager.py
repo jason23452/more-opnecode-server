@@ -13,18 +13,19 @@ class ContainerManager:
     def __init__(self, settings):
         self.settings = settings
         self._lock = threading.RLock()
+        self._create_lock = threading.Lock()
         self._failures: dict[str, int] = {}
         self._latest_urls: dict[str, str] = {}
         self._statuses: dict[str, str] = {}
         self._creating: set[str] = set()
+        self._recovering: set[str] = set()
         self._discover()
         self._stop = threading.Event()
         self._monitor = threading.Thread(target=self._monitor_loop, name="opencode-tunnel-monitor", daemon=True)
         self._monitor.start()
 
     def list(self) -> list[dict[str, str]]:
-        with self._lock:
-            return self._discover()
+        return self._discover()
 
     def get(self, container_id: str) -> dict[str, str] | None:
         return next((container for container in self.list() if container["id"] == container_id), None)
@@ -33,22 +34,25 @@ class ContainerManager:
         result = self._docker("ps", "-aq", "--no-trunc", "--filter", "label=dynamic-opencode=true", check=False)
         if result.returncode != 0:
             return []
+        with self._lock:
+            creating = set(self._creating)
         containers = []
         for container_id in result.stdout.splitlines():
-            if container_id in self._creating:
+            if container_id in creating:
                 continue
             details = self._inspect(container_id)
             if details is not None:
-                details["url"] = self._latest_urls.get(container_id, details["url"])
-                details["status"] = self._statuses.get(container_id, details["status"])
-                self._latest_urls[container_id] = details["url"]
-                self._statuses[container_id] = details["status"]
                 containers.append(details)
         present = {container["id"] for container in containers}
-        self._failures = {key: value for key, value in self._failures.items() if key in present}
-        self._latest_urls = {key: value for key, value in self._latest_urls.items() if key in present}
-        self._statuses = {key: value for key, value in self._statuses.items() if key in present}
-        return containers
+        with self._lock:
+            self._failures = {key: value for key, value in self._failures.items() if key in present}
+            self._latest_urls = {key: value for key, value in self._latest_urls.items() if key in present}
+            self._statuses = {key: value for key, value in self._statuses.items() if key in present}
+            for container in containers:
+                container_id = container["id"]
+                container["url"] = self._latest_urls.setdefault(container_id, container["url"])
+                container["status"] = self._statuses.setdefault(container_id, container["status"])
+            return containers
 
     def _monitor_loop(self) -> None:
         while not self._stop.wait(max(0.1, self.settings.opencode_tunnel_probe_interval)):
@@ -59,21 +63,34 @@ class ContainerManager:
                 continue
 
     def monitor_once(self) -> None:
-        with self._lock:
-            for container in self._discover():
-                container_id, url = container["id"], container["url"]
-                if not url:
+        for container in self._discover():
+            container_id, url = container["id"], container["url"]
+            if not url:
+                with self._lock:
                     self._statuses[container_id] = "unhealthy"
-                    continue
-                if self._probe(url):
+                continue
+            if self._probe(url):
+                with self._lock:
                     self._failures[container_id] = 0
                     self._statuses[container_id] = "healthy"
-                    continue
+                continue
+            with self._lock:
                 failures = self._failures.get(container_id, 0) + 1
                 self._failures[container_id] = failures
-                if failures < max(1, self.settings.opencode_tunnel_failure_threshold):
-                    continue
+                should_recover = (
+                    failures >= max(1, self.settings.opencode_tunnel_failure_threshold)
+                    and container_id not in self._recovering
+                )
+                if should_recover:
+                    self._recovering.add(container_id)
+            if not should_recover:
+                continue
+            try:
                 new_url = self._recover_tunnel(container_id, url)
+            finally:
+                with self._lock:
+                    self._recovering.discard(container_id)
+            with self._lock:
                 if new_url:
                     self._latest_urls[container_id] = new_url
                     self._statuses[container_id] = "healthy"
@@ -112,15 +129,18 @@ class ContainerManager:
         return self._healthy(url)
 
     def _inspect(self, container_id: str) -> dict[str, str] | None:
+        with self._lock:
+            cached_status = self._statuses.get(container_id)
+            cached_url = self._latest_urls.get(container_id)
         state = self._docker("inspect", "-f", "{{.State.Running}}", container_id, check=False)
         if state.returncode != 0:
             return None
         url = self._read_tunnel_url(container_id)
-        if container_id in self._statuses:
+        if cached_status is not None:
             return {
                 "id": container_id,
-                "status": self._statuses[container_id],
-                "url": self._latest_urls.get(container_id, url),
+                "status": cached_status,
+                "url": cached_url or url,
             }
         healthy = state.stdout.strip() == "true" and bool(url) and self._healthy(url)
         return {"id": container_id, "status": "healthy" if healthy else "unhealthy", "url": url}
@@ -128,7 +148,7 @@ class ContainerManager:
     def create(self) -> dict[str, str]:
         if not self.settings.opencode_password:
             raise RuntimeError("OpenCode password is not configured")
-        with self._lock:
+        with self._create_lock:
             ids = self._docker("ps", "-q", "--no-trunc", "--filter", "label=dynamic-opencode=true").stdout.splitlines()
             if len(ids) >= self.settings.opencode_max_containers:
                 raise RuntimeError("container capacity reached")
@@ -140,7 +160,8 @@ class ContainerManager:
                 "-e", f"OPENCODE_SERVER_PASSWORD={self.settings.opencode_password}",
                 self.settings.opencode_image,
             ).stdout.strip()
-            self._creating.add(container_id)
+            with self._lock:
+                self._creating.add(container_id)
         deadline = time.monotonic() + self.settings.opencode_startup_timeout
         try:
             while time.monotonic() < deadline:
@@ -167,16 +188,20 @@ class ContainerManager:
             raise
 
     def delete(self, container_id: str) -> None:
+        managed = self._docker(
+            "inspect", "-f", "{{ index .Config.Labels \"dynamic-opencode\" }}",
+            container_id, check=False,
+        )
+        if managed.returncode != 0 or managed.stdout.strip() != "true":
+            raise LookupError("managed container not found")
+        # Removing the container terminates its in-container cloudflared process
+        # and deletes its container-local ephemeral work data.
+        self._docker("rm", "-f", container_id)
         with self._lock:
-            managed = self._docker(
-                "inspect", "-f", "{{ index .Config.Labels \"dynamic-opencode\" }}",
-                container_id, check=False,
-            )
-            if managed.returncode != 0 or managed.stdout.strip() != "true":
-                raise LookupError("managed container not found")
-            # Removing the container terminates its in-container cloudflared process
-            # and deletes its container-local ephemeral work data.
-            self._docker("rm", "-f", container_id)
+            self._latest_urls.pop(container_id, None)
+            self._statuses.pop(container_id, None)
+            self._failures.pop(container_id, None)
+            self._recovering.discard(container_id)
 
     def _healthy(self, url: str) -> bool:
         try:
