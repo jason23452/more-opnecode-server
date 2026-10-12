@@ -234,6 +234,66 @@ def test_container_manager_create_applies_configured_cpu_memory_and_capacity_lim
     assert "--memory" in run_args and "3g" in run_args
 
 
+def test_create_then_immediate_list_keeps_initialized_tunnel_healthy() -> None:
+    manager = ContainerManager(Settings(opencode_password="secret", opencode_admin_token="admin-secret"))
+    manager._docker = Mock(side_effect=[
+        CompletedProcess([], 0, "", ""),
+        CompletedProcess([], 0, "new-container\n", ""),
+        CompletedProcess([], 0, "new-container\n", ""),
+        CompletedProcess([], 0, "true\n", ""),
+    ])
+    manager._ensure_image = Mock()
+    manager._read_tunnel_url = Mock(return_value="https://new.trycloudflare.com")
+    manager._healthy = Mock(return_value=True)
+    app.state.container_manager = manager
+    app.state.settings = Settings(opencode_password="secret", opencode_admin_token="admin-secret")
+
+    created = client.post("/api/opencode/containers", headers={"Authorization": "Bearer admin-secret"})
+    listed = client.get("/api/opencode/containers", headers={"Authorization": "Bearer admin-secret"})
+
+    assert created.status_code == 201
+    assert listed.status_code == 200
+    assert listed.json() == [{
+        "id": "new-container", "status": "healthy", "url": "https://new.trycloudflare.com",
+    }]
+    assert manager._healthy.call_count == 1
+
+
+def test_api_status_remains_healthy_until_configured_probe_failure_threshold() -> None:
+    manager = ContainerManager(Settings(
+        opencode_password="secret", opencode_admin_token="admin-secret",
+        opencode_tunnel_failure_threshold=2, opencode_tunnel_recovery_attempts=0,
+    ))
+    manager._docker = Mock(side_effect=lambda *args, **kwargs: CompletedProcess(
+        [], 0, "oc-1\n" if args[0] == "ps" else "true\n", "",
+    ))
+    manager._inspect = Mock(return_value={
+        "id": "oc-1", "status": "unhealthy", "url": "https://old.trycloudflare.com",
+    })
+    manager._probe = Mock(return_value=False)
+    manager._recover_tunnel = Mock(return_value="")
+    app.state.container_manager = manager
+    app.state.settings = Settings(opencode_password="secret", opencode_admin_token="admin-secret")
+    manager._latest_urls["oc-1"] = "https://old.trycloudflare.com"
+    manager._statuses["oc-1"] = "healthy"
+
+    before_threshold = client.get("/api/opencode/containers/oc-1", headers={
+        "Authorization": "Bearer admin-secret",
+    })
+    manager.monitor_once()
+    first_failure = client.get("/api/opencode/containers/oc-1", headers={
+        "Authorization": "Bearer admin-secret",
+    })
+    manager.monitor_once()
+    second_failure = client.get("/api/opencode/containers/oc-1", headers={
+        "Authorization": "Bearer admin-secret",
+    })
+
+    assert before_threshold.json()["status"] == "healthy"
+    assert first_failure.json()["status"] == "healthy"
+    assert second_failure.json()["status"] == "unhealthy"
+
+
 def test_container_manager_rejects_creation_at_configured_capacity() -> None:
     manager = ContainerManager(Settings(opencode_password="secret", opencode_max_containers=1))
     manager._docker = Mock(return_value=CompletedProcess([], 0, "existing\n", ""))
