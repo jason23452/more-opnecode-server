@@ -23,3 +23,7 @@ Issue 與規格以 Markdown 檔案記錄於 `.scratch/`。詳見 `docs/agents/is
 ### Domain docs
 
 採用 single-context：根目錄 `GLOSSARY.md` 與 `docs/adr/`。詳見 `docs/agents/domain.md`。
+
+### Grilling
+
+使用 `grilling` 訪談時，每個問題都必須透過 OpenCode 的 `question` 工具互動提問，並等待使用者回答；在訪談完成且使用者另外明確要求實作前，只釐清與整理共識，不進入開發或修改檔案。
