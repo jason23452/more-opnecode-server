@@ -103,7 +103,9 @@ class ContainerManager:
         for attempt in range(max(1, self.settings.opencode_tunnel_recovery_attempts)):
             result = self._docker("exec", container_id, "sh", "-c", command, check=False)
             if result.returncode == 0:
-                return self._wait_for_recovered_tunnel(container_id, old_url)
+                recovered_url = self._wait_for_recovered_tunnel(container_id, old_url)
+                if recovered_url:
+                    return recovered_url
             if attempt + 1 < self.settings.opencode_tunnel_recovery_attempts:
                 time.sleep(self.settings.opencode_tunnel_recovery_delay)
         return ""

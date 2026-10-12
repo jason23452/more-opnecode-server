@@ -1,5 +1,6 @@
 import hmac
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, Header, HTTPException, Request, Response, status
 from pydantic import BaseModel
@@ -17,7 +18,7 @@ class ContainerCreated(BaseModel):
 
 class ContainerStatus(BaseModel):
     id: str
-    status: str
+    status: Literal["healthy", "unhealthy"]
     url: str
 
 
@@ -28,14 +29,18 @@ def _authorize(request: Request, authorization: str | None) -> None:
         raise HTTPException(status_code=401, detail="Management credentials required")
 
 
+def _service_unavailable(message: str, *args: str) -> HTTPException:
+    logger.exception(message, *args)
+    return HTTPException(status_code=503, detail=_SAFE_SERVICE_ERROR)
+
+
 @router.post("", response_model=ContainerCreated, status_code=201)
 def create_container(request: Request, authorization: str | None = Header(default=None)) -> ContainerCreated:
     _authorize(request, authorization)
     try:
         result = request.app.state.container_manager.create()
     except Exception as error:
-        logger.exception("Failed to create OpenCode container")
-        raise HTTPException(status_code=503, detail=_SAFE_SERVICE_ERROR) from error
+        raise _service_unavailable("Failed to create OpenCode container") from error
     return ContainerCreated(**result)
 
 
@@ -45,8 +50,7 @@ def list_containers(request: Request, authorization: str | None = Header(default
     try:
         return [ContainerStatus(**container) for container in request.app.state.container_manager.list()]
     except Exception as error:
-        logger.exception("Failed to list OpenCode containers")
-        raise HTTPException(status_code=503, detail=_SAFE_SERVICE_ERROR) from error
+        raise _service_unavailable("Failed to list OpenCode containers") from error
 
 
 @router.get("/{container_id}", response_model=ContainerStatus)
@@ -57,8 +61,7 @@ def get_container(
     try:
         container = request.app.state.container_manager.get(container_id)
     except Exception as error:
-        logger.exception("Failed to retrieve OpenCode container %s", container_id)
-        raise HTTPException(status_code=503, detail=_SAFE_SERVICE_ERROR) from error
+        raise _service_unavailable("Failed to retrieve OpenCode container %s", container_id) from error
     if container is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Container not found")
     return ContainerStatus(**container)
@@ -76,6 +79,5 @@ def delete_container(
     except LookupError as error:
         raise HTTPException(status_code=404, detail="Managed container not found") from error
     except Exception as error:
-        logger.exception("Failed to delete OpenCode container %s", container_id)
-        raise HTTPException(status_code=503, detail=_SAFE_SERVICE_ERROR) from error
+        raise _service_unavailable("Failed to delete OpenCode container %s", container_id) from error
     return Response(status_code=204)

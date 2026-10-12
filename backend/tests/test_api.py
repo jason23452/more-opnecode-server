@@ -202,6 +202,22 @@ def test_failed_tunnel_retries_report_unhealthy_without_removing_container() -> 
     assert all("rm" not in call.args for call in manager._docker.call_args_list)
 
 
+def test_tunnel_recovery_restarts_again_when_new_tunnel_never_becomes_ready(monkeypatch) -> None:
+    manager = ContainerManager(Settings(
+        opencode_password="secret", opencode_tunnel_recovery_attempts=3,
+        opencode_tunnel_recovery_delay=0,
+    ))
+    manager._docker = Mock(return_value=CompletedProcess([], 0, "", ""))
+    manager._wait_for_recovered_tunnel = Mock(return_value="")
+    monkeypatch.setattr("src.Features.Opencode.ContainerManager.time.sleep", lambda _: None)
+
+    recovered = manager._recover_tunnel("oc-1", "https://old.trycloudflare.com")
+
+    assert recovered == ""
+    assert manager._docker.call_count == 3
+    assert manager._wait_for_recovered_tunnel.call_count == 3
+
+
 def test_recovery_ignores_stale_url_and_probes_a_distinct_new_url(monkeypatch) -> None:
     manager = ContainerManager(Settings(opencode_password="secret", opencode_startup_timeout=1))
     manager._read_tunnel_url = Mock(side_effect=[

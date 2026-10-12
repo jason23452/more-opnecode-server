@@ -1,8 +1,14 @@
 FROM node:22-bookworm-slim
+ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates python3 python3-venv procps && \
     curl -LsSf https://astral.sh/uv/install.sh | sh && \
     npm install --global pnpm opencode-ai @opencode-ai/sdk && \
-    curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared && \
+    case "$TARGETARCH" in \
+      amd64) cloudflared_arch=amd64 ;; \
+      arm64) cloudflared_arch=arm64 ;; \
+      *) echo "Unsupported TARGETARCH: ${TARGETARCH:-unset} (supported: amd64, arm64)" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${cloudflared_arch}" -o /usr/local/bin/cloudflared && \
     chmod +x /usr/local/bin/cloudflared && rm -rf /var/lib/apt/lists/*
 ENV PATH="/root/.local/bin:${PATH}"
 EXPOSE 4096

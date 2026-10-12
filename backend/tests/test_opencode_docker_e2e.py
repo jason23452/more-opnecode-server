@@ -65,6 +65,17 @@ def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
         reachable = httpx.get(payload["url"] + "/", auth=("opencode", password), timeout=20)
         assert reachable.status_code == 200
         headers = {"Authorization": f"Bearer {admin_token}"}
+        invalid_headers = {"Authorization": "Bearer invalid-management-token"}
+        for method, path in (
+            (httpx.get, "/api/opencode/containers"),
+            (httpx.get, f"/api/opencode/containers/{container_id}"),
+            (httpx.delete, f"/api/opencode/containers/{container_id}"),
+        ):
+            for credentials in (None, invalid_headers):
+                response = method(
+                    base_url + path, headers=credentials, timeout=20,
+                )
+                assert response.status_code == 401, response.text
         listed = httpx.get(base_url + "/api/opencode/containers", headers=headers, timeout=20)
         assert listed.status_code == 200, listed.text
         assert payload["id"] in {container["id"] for container in listed.json()}
