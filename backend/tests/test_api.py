@@ -150,6 +150,40 @@ def test_container_manager_refuses_to_delete_unmanaged_container() -> None:
     manager._docker.assert_called_once()
 
 
+def test_tunnel_recovery_waits_for_consecutive_probe_failures_and_reuses_container() -> None:
+    manager = ContainerManager(Settings(opencode_password="secret", opencode_tunnel_failure_threshold=2))
+    manager._discover = Mock(side_effect=lambda: [{
+        "id": "oc-1", "status": manager._statuses.get("oc-1", "healthy"),
+        "url": manager._latest_urls.get("oc-1", "https://old.trycloudflare.com"),
+    }])
+    manager._probe = Mock(side_effect=[False, False, True])
+    manager._docker = Mock(return_value=CompletedProcess([], 0, "", ""))
+    manager._read_tunnel_url = Mock(side_effect=["https://new.trycloudflare.com"])
+
+    manager.monitor_once()
+    manager._docker.assert_not_called()
+    manager.monitor_once()
+
+    manager._docker.assert_any_call("exec", "oc-1", "sh", "-c", "pkill cloudflared || true; cloudflared tunnel --url http://127.0.0.1:4096 >/tmp/cloudflared.log 2>&1 &", check=False)
+    assert manager.get("oc-1")["url"] == "https://new.trycloudflare.com"
+    assert manager.get("oc-1")["status"] == "healthy"
+
+
+def test_failed_tunnel_retries_report_unhealthy_without_removing_container() -> None:
+    manager = ContainerManager(Settings(opencode_password="secret", opencode_tunnel_failure_threshold=1,
+                                        opencode_tunnel_recovery_attempts=2))
+    manager._discover = Mock(return_value=[{"id": "oc-1", "status": "unhealthy", "url": "https://old.trycloudflare.com"}])
+    manager._probe = Mock(return_value=False)
+    manager._docker = Mock(return_value=CompletedProcess([], 1, "", "failed"))
+
+    manager.monitor_once()
+
+    assert manager._docker.call_count == 2
+    assert all(call.args[0] == "exec" for call in manager._docker.call_args_list)
+    assert manager._statuses["oc-1"] == "unhealthy"
+    assert all("rm" not in call.args for call in manager._docker.call_args_list)
+
+
 def test_get_opencode_container_requires_internal_management_token() -> None:
     response = client.get("/api/opencode/containers/oc-123")
 

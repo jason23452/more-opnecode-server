@@ -6,4 +6,4 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
     chmod +x /usr/local/bin/cloudflared && rm -rf /var/lib/apt/lists/*
 ENV PATH="/root/.local/bin:${PATH}"
 EXPOSE 4096
-CMD ["sh", "-c", "opencode serve --hostname 0.0.0.0 --port 4096 & sleep 3; exec cloudflared tunnel --url http://127.0.0.1:4096"]
+CMD ["sh", "-c", "opencode serve --hostname 0.0.0.0 --port 4096 & opencode_pid=$!; sleep 3; cloudflared tunnel --url http://127.0.0.1:4096 >/tmp/cloudflared.log 2>&1 & wait $opencode_pid"]

@@ -20,6 +20,10 @@ def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
         "OPENCODE_PASSWORD": password,
         "OPENCODE_IMAGE": f"dynamic-opencode-e2e:{uuid.uuid4().hex[:8]}",
         "OPENCODE_STARTUP_TIMEOUT": "300",
+        "OPENCODE_TUNNEL_PROBE_INTERVAL": "2",
+        "OPENCODE_TUNNEL_FAILURE_THRESHOLD": "2",
+        "OPENCODE_TUNNEL_RECOVERY_ATTEMPTS": "3",
+        "OPENCODE_TUNNEL_RECOVERY_DELAY": "2",
     }
     process = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "src.App.Main:app", "--host", "127.0.0.1", "--port", str(api_port)],
@@ -56,6 +60,31 @@ def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
         assert queried.status_code == 200, queried.text
         assert queried.json()["url"] == payload["url"]
 
+        marker = f"tunnel-recovery-{uuid.uuid4().hex}"
+        subprocess.run(["docker", "exec", container_id, "sh", "-c", f"printf '%s' '{marker}' >/tmp/opencode-retention-marker"], check=True)
+        subprocess.run(["docker", "exec", container_id, "sh", "-c", "pkill cloudflared"], check=True)
+        deadline = time.monotonic() + 180
+        recovered_url = payload["url"]
+        while time.monotonic() < deadline:
+            current = httpx.get(base_url + f"/api/opencode/containers/{container_id}", headers=headers, timeout=20)
+            assert current.status_code == 200, current.text
+            recovered_url = current.json()["url"]
+            if recovered_url != payload["url"] and current.json()["status"] == "healthy":
+                break
+            time.sleep(2)
+        else:
+            pytest.fail("Tunnel did not recover to a new healthy URL")
+        reachable = httpx.get(recovered_url + "/", auth=("opencode", password), timeout=20)
+        assert reachable.status_code == 200
+        assert subprocess.run(
+            ["docker", "exec", container_id, "sh", "-c", f"test \"$(cat /tmp/opencode-retention-marker)\" = '{marker}'"],
+            capture_output=True,
+        ).returncode == 0
+        listed_after_recovery = httpx.get(base_url + "/api/opencode/containers", headers=headers, timeout=20).json()
+        retained = next(container for container in listed_after_recovery if container["id"] == container_id)
+        assert retained["url"] == recovered_url
+        assert retained["status"] == "healthy"
+
         process.terminate()
         process.wait(timeout=10)
         process = subprocess.Popen(
@@ -76,12 +105,12 @@ def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
         assert payload["id"] in {container["id"] for container in recovered_list.json()}
         rediscovered = next(container for container in recovered_list.json() if container["id"] == payload["id"])
         assert rediscovered["status"] == "healthy"
-        assert rediscovered["url"] == payload["url"]
+        assert rediscovered["url"] == recovered_url
         recovered_query = httpx.get(
             base_url + f"/api/opencode/containers/{container_id}", headers=headers, timeout=20
         )
         assert recovered_query.status_code == 200, recovered_query.text
-        assert recovered_query.json()["url"] == payload["url"]
+        assert recovered_query.json()["url"] == recovered_url
 
         deleted = httpx.delete(
             base_url + f"/api/opencode/containers/{container_id}",
@@ -90,7 +119,7 @@ def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
         assert deleted.status_code == 204
         assert subprocess.run(["docker", "inspect", container_id], capture_output=True).returncode != 0
         with pytest.raises(httpx.HTTPError):
-            httpx.get(payload["url"] + "/", auth=("opencode", password), timeout=10)
+            httpx.get(recovered_url + "/", auth=("opencode", password), timeout=10)
         missing = httpx.delete(
             base_url + f"/api/opencode/containers/{container_id}", headers=headers, timeout=10,
         )
