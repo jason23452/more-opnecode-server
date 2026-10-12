@@ -249,6 +249,40 @@ def test_container_manager_rejects_creation_at_configured_capacity() -> None:
     manager._ensure_image.assert_not_called()
 
 
+def test_container_manager_discovers_full_docker_ids() -> None:
+    full_id = "eb48dc1fde54" + "0" * 52
+    manager = ContainerManager(Settings())
+    manager._docker = Mock(return_value=CompletedProcess([], 0, f"{full_id}\n", ""))
+    manager._inspect = Mock(return_value={
+        "id": full_id, "status": "healthy", "url": "https://full-id.trycloudflare.com",
+    })
+
+    containers = manager.list()
+
+    assert containers[0]["id"] == full_id
+    assert manager._docker.call_args.args == (
+        "ps", "-aq", "--no-trunc", "--filter", "label=dynamic-opencode=true",
+    )
+
+
+def test_container_manager_uses_full_ids_when_checking_creation_capacity() -> None:
+    manager = ContainerManager(Settings(opencode_password="secret", opencode_max_containers=2))
+    full_id = "eb48dc1fde54" + "0" * 52
+    manager._docker = Mock(side_effect=[
+        CompletedProcess([], 0, f"{full_id}\n", ""),
+        CompletedProcess([], 0, "new-container\n", ""),
+    ])
+    manager._ensure_image = Mock()
+    manager._read_tunnel_url = Mock(return_value="https://new.trycloudflare.com")
+    manager._healthy = Mock(return_value=True)
+
+    manager.create()
+
+    assert manager._docker.call_args_list[0].args == (
+        "ps", "-q", "--no-trunc", "--filter", "label=dynamic-opencode=true",
+    )
+
+
 def test_container_manager_cleans_up_container_when_initialization_times_out() -> None:
     manager = ContainerManager(Settings(opencode_password="secret", opencode_startup_timeout=0))
     manager._docker = Mock(side_effect=[

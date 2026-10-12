@@ -29,7 +29,7 @@ class ContainerManager:
         return next((container for container in self.list() if container["id"] == container_id), None)
 
     def _discover(self) -> list[dict[str, str]]:
-        result = self._docker("ps", "-aq", "--filter", "label=dynamic-opencode=true", check=False)
+        result = self._docker("ps", "-aq", "--no-trunc", "--filter", "label=dynamic-opencode=true", check=False)
         if result.returncode != 0:
             return []
         containers = []
@@ -120,7 +120,7 @@ class ContainerManager:
         if not self.settings.opencode_password:
             raise RuntimeError("OpenCode password is not configured")
         with self._lock:
-            ids = self._docker("ps", "-q", "--filter", "label=dynamic-opencode=true").stdout.splitlines()
+            ids = self._docker("ps", "-q", "--no-trunc", "--filter", "label=dynamic-opencode=true").stdout.splitlines()
             if len(ids) >= self.settings.opencode_max_containers:
                 raise RuntimeError("container capacity reached")
             self._ensure_image()
