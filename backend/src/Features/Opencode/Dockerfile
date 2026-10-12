@@ -1,5 +1,5 @@
 FROM node:22-bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates python3 python3-venv && \
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates python3 python3-venv procps && \
     curl -LsSf https://astral.sh/uv/install.sh | sh && \
     npm install --global pnpm opencode-ai @opencode-ai/sdk && \
     curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared && \

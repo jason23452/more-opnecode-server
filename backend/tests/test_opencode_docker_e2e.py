@@ -77,7 +77,7 @@ def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
 
         marker = f"tunnel-recovery-{uuid.uuid4().hex}"
         subprocess.run(["docker", "exec", container_id, "sh", "-c", f"printf '%s' '{marker}' >/tmp/opencode-retention-marker"], check=True)
-        subprocess.run(["docker", "exec", container_id, "sh", "-c", "pkill cloudflared"], check=True)
+        subprocess.run(["docker", "exec", container_id, "sh", "-c", "pkill -x cloudflared"], check=True)
         deadline = time.monotonic() + 180
         recovered_url = payload["url"]
         while time.monotonic() < deadline:
