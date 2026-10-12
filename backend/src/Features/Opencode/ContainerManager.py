@@ -16,6 +16,7 @@ class ContainerManager:
         self._failures: dict[str, int] = {}
         self._latest_urls: dict[str, str] = {}
         self._statuses: dict[str, str] = {}
+        self._creating: set[str] = set()
         self._discover()
         self._stop = threading.Event()
         self._monitor = threading.Thread(target=self._monitor_loop, name="opencode-tunnel-monitor", daemon=True)
@@ -34,6 +35,8 @@ class ContainerManager:
             return []
         containers = []
         for container_id in result.stdout.splitlines():
+            if container_id in self._creating:
+                continue
             details = self._inspect(container_id)
             if details is not None:
                 details["url"] = self._latest_urls.get(container_id, details["url"])
@@ -113,6 +116,12 @@ class ContainerManager:
         if state.returncode != 0:
             return None
         url = self._read_tunnel_url(container_id)
+        if container_id in self._statuses:
+            return {
+                "id": container_id,
+                "status": self._statuses[container_id],
+                "url": self._latest_urls.get(container_id, url),
+            }
         healthy = state.stdout.strip() == "true" and bool(url) and self._healthy(url)
         return {"id": container_id, "status": "healthy" if healthy else "unhealthy", "url": url}
 
@@ -131,11 +140,17 @@ class ContainerManager:
                 "-e", f"OPENCODE_SERVER_PASSWORD={self.settings.opencode_password}",
                 self.settings.opencode_image,
             ).stdout.strip()
+            self._creating.add(container_id)
         deadline = time.monotonic() + self.settings.opencode_startup_timeout
         try:
             while time.monotonic() < deadline:
                 url = self._read_tunnel_url(container_id)
                 if url and self._healthy(url):
+                    with self._lock:
+                        self._latest_urls[container_id] = url
+                        self._statuses[container_id] = "healthy"
+                        self._failures[container_id] = 0
+                        self._creating.discard(container_id)
                     return {"id": container_id, "url": url}
                 running = self._docker("inspect", "-f", "{{.State.Running}}", container_id, check=False)
                 if running.returncode != 0 or running.stdout.strip() != "true":
@@ -144,6 +159,11 @@ class ContainerManager:
             raise RuntimeError("OpenCode container did not become ready before timeout")
         except Exception:
             self._docker("rm", "-f", container_id, check=False)
+            with self._lock:
+                self._creating.discard(container_id)
+                self._latest_urls.pop(container_id, None)
+                self._statuses.pop(container_id, None)
+                self._failures.pop(container_id, None)
             raise
 
     def delete(self, container_id: str) -> None:
