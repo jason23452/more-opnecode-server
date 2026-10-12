@@ -9,3 +9,17 @@
 - 前端 `@/` 指向 `frontend/src/`；部署時 API URL 由 `frontend/public/runtime-config.js` 提供，修改該檔不需重建。後端 API 預設前綴 `/api`，設定由環境變數或 `.env` 提供。
 - 後端依賴以 `uv add` / `uv add --dev` 管理，變更依賴時一併提交更新的 `backend/uv.lock`；前端依賴使用 npm 並保留 `frontend/package-lock.json`。
 - 更完整的架構與設定見 `README.md`、`frontend/README.md`、`backend/README.md`；以 `package.json`、`pyproject.toml` 等執行設定為準。
+
+## Agent skills
+
+### Issue tracker
+
+Issue 與規格以 Markdown 檔案記錄於 `.scratch/`。詳見 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+使用預設標籤：`needs-triage`、`needs-info`、`ready-for-agent`、`ready-for-human`、`wontfix`。詳見 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+採用 single-context：根目錄 `GLOSSARY.md` 與 `docs/adr/`。詳見 `docs/agents/domain.md`。
