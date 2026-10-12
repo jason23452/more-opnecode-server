@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import re
 import subprocess
 import threading
@@ -11,6 +13,35 @@ class ContainerManager:
     def __init__(self, settings):
         self.settings = settings
         self._lock = threading.Lock()
+        self._discover()
+
+    def list(self) -> list[dict[str, str]]:
+        with self._lock:
+            return self._discover()
+
+    def get(self, container_id: str) -> dict[str, str] | None:
+        return next((container for container in self.list() if container["id"] == container_id), None)
+
+    def _discover(self) -> list[dict[str, str]]:
+        result = self._docker("ps", "-aq", "--filter", "label=dynamic-opencode=true", check=False)
+        if result.returncode != 0:
+            return []
+        containers = []
+        for container_id in result.stdout.splitlines():
+            details = self._inspect(container_id)
+            if details is not None:
+                containers.append(details)
+        return containers
+
+    def _inspect(self, container_id: str) -> dict[str, str] | None:
+        state = self._docker("inspect", "-f", "{{.State.Running}}", container_id, check=False)
+        if state.returncode != 0:
+            return None
+        logs = self._docker("logs", container_id, check=False).stdout
+        urls = re.findall(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", logs)
+        url = urls[-1] if urls else ""
+        healthy = state.stdout.strip() == "true" and bool(url) and self._healthy(url)
+        return {"id": container_id, "status": "healthy" if healthy else "unhealthy", "url": url}
 
     def create(self) -> dict[str, str]:
         if not self.settings.opencode_password:

@@ -45,19 +45,54 @@ def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
         assert password not in response.text
         reachable = httpx.get(payload["url"] + "/", auth=("opencode", password), timeout=20)
         assert reachable.status_code == 200
+        headers = {"Authorization": f"Bearer {admin_token}"}
+        listed = httpx.get(base_url + "/api/opencode/containers", headers=headers, timeout=20)
+        assert listed.status_code == 200, listed.text
+        assert payload["id"] in {container["id"] for container in listed.json()}
+        listed_container = next(container for container in listed.json() if container["id"] == payload["id"])
+        assert listed_container["status"] == "healthy"
+        assert listed_container["url"] == payload["url"]
+        queried = httpx.get(base_url + f"/api/opencode/containers/{container_id}", headers=headers, timeout=20)
+        assert queried.status_code == 200, queried.text
+        assert queried.json()["url"] == payload["url"]
+
+        process.terminate()
+        process.wait(timeout=10)
+        process = subprocess.Popen(
+            [sys.executable, "-m", "uvicorn", "src.App.Main:app", "--host", "127.0.0.1", "--port", str(api_port)],
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            try:
+                if httpx.get(base_url + "/api/health", timeout=1).status_code == 200:
+                    break
+            except httpx.HTTPError:
+                time.sleep(0.25)
+        else:
+            pytest.fail("backend did not restart within 30 seconds")
+        recovered_list = httpx.get(base_url + "/api/opencode/containers", headers=headers, timeout=20)
+        assert recovered_list.status_code == 200, recovered_list.text
+        assert payload["id"] in {container["id"] for container in recovered_list.json()}
+        rediscovered = next(container for container in recovered_list.json() if container["id"] == payload["id"])
+        assert rediscovered["status"] == "healthy"
+        assert rediscovered["url"] == payload["url"]
+        recovered_query = httpx.get(
+            base_url + f"/api/opencode/containers/{container_id}", headers=headers, timeout=20
+        )
+        assert recovered_query.status_code == 200, recovered_query.text
+        assert recovered_query.json()["url"] == payload["url"]
+
         deleted = httpx.delete(
             base_url + f"/api/opencode/containers/{container_id}",
-            headers={"Authorization": f"Bearer {admin_token}"}, timeout=30,
+            headers=headers, timeout=30,
         )
         assert deleted.status_code == 204
-        assert subprocess.run(
-            ["docker", "inspect", container_id], capture_output=True
-        ).returncode != 0
+        assert subprocess.run(["docker", "inspect", container_id], capture_output=True).returncode != 0
         with pytest.raises(httpx.HTTPError):
             httpx.get(payload["url"] + "/", auth=("opencode", password), timeout=10)
         missing = httpx.delete(
-            base_url + f"/api/opencode/containers/{container_id}",
-            headers={"Authorization": f"Bearer {admin_token}"}, timeout=10,
+            base_url + f"/api/opencode/containers/{container_id}", headers=headers, timeout=10,
         )
         assert missing.status_code == 404
     finally:
