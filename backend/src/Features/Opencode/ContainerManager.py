@@ -43,6 +43,18 @@ class ContainerManager:
             self._docker("rm", "-f", container_id, check=False)
             raise
 
+    def delete(self, container_id: str) -> None:
+        with self._lock:
+            managed = self._docker(
+                "inspect", "-f", "{{ index .Config.Labels \"dynamic-opencode\" }}",
+                container_id, check=False,
+            )
+            if managed.returncode != 0 or managed.stdout.strip() != "true":
+                raise LookupError("managed container not found")
+            # Removing the container terminates its in-container cloudflared process
+            # and deletes its container-local ephemeral work data.
+            self._docker("rm", "-f", container_id)
+
     def _healthy(self, url: str) -> bool:
         try:
             response = subprocess.run(

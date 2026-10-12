@@ -45,6 +45,21 @@ def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
         assert password not in response.text
         reachable = httpx.get(payload["url"] + "/", auth=("opencode", password), timeout=20)
         assert reachable.status_code == 200
+        deleted = httpx.delete(
+            base_url + f"/api/opencode/containers/{container_id}",
+            headers={"Authorization": f"Bearer {admin_token}"}, timeout=30,
+        )
+        assert deleted.status_code == 204
+        assert subprocess.run(
+            ["docker", "inspect", container_id], capture_output=True
+        ).returncode != 0
+        with pytest.raises(httpx.HTTPError):
+            httpx.get(payload["url"] + "/", auth=("opencode", password), timeout=10)
+        missing = httpx.delete(
+            base_url + f"/api/opencode/containers/{container_id}",
+            headers={"Authorization": f"Bearer {admin_token}"}, timeout=10,
+        )
+        assert missing.status_code == 404
     finally:
         if container_id:
             subprocess.run(["docker", "rm", "-f", container_id], check=False, capture_output=True)

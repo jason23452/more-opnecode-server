@@ -1,4 +1,5 @@
 from unittest.mock import Mock
+from subprocess import CompletedProcess
 
 from fastapi.testclient import TestClient
 
@@ -64,3 +65,80 @@ def test_create_opencode_reports_capacity_limit_without_starting_container() -> 
 
     assert response.status_code == 503
     manager.create.assert_called_once()
+
+
+def test_delete_opencode_requires_internal_management_token() -> None:
+    response = client.delete("/api/opencode/containers/oc-123")
+
+    assert response.status_code == 401
+
+
+def test_delete_opencode_removes_managed_container() -> None:
+    manager = Mock(spec=ContainerManager)
+    app.state.container_manager = manager
+    app.state.settings = Settings(opencode_admin_token="admin-secret")
+
+    response = client.delete(
+        "/api/opencode/containers/oc-123",
+        headers={"Authorization": "Bearer admin-secret"},
+    )
+
+    assert response.status_code == 204
+    manager.delete.assert_called_once_with("oc-123")
+
+
+def test_delete_opencode_reports_unknown_container() -> None:
+    manager = Mock(spec=ContainerManager)
+    manager.delete.side_effect = LookupError("managed container not found")
+    app.state.container_manager = manager
+    app.state.settings = Settings(opencode_admin_token="admin-secret")
+
+    response = client.delete(
+        "/api/opencode/containers/not-managed",
+        headers={"Authorization": "Bearer admin-secret"},
+    )
+
+    assert response.status_code == 404
+
+
+def test_delete_opencode_reports_removal_failure() -> None:
+    manager = Mock(spec=ContainerManager)
+    manager.delete.side_effect = RuntimeError("Docker removal failed")
+    app.state.container_manager = manager
+    app.state.settings = Settings(opencode_admin_token="admin-secret")
+
+    response = client.delete(
+        "/api/opencode/containers/oc-123",
+        headers={"Authorization": "Bearer admin-secret"},
+    )
+
+    assert response.status_code == 503
+
+
+def test_container_manager_deletes_managed_container_and_its_runtime_data() -> None:
+    manager = ContainerManager(Settings())
+    manager._docker = Mock(side_effect=[
+        CompletedProcess([], 0, "true\n", ""),
+        CompletedProcess([], 0, "", ""),
+    ])
+
+    manager.delete("oc-managed")
+
+    assert manager._docker.call_args_list[0].args == (
+        "inspect", "-f", '{{ index .Config.Labels "dynamic-opencode" }}', "oc-managed",
+    )
+    assert manager._docker.call_args_list[1].args == ("rm", "-f", "oc-managed")
+
+
+def test_container_manager_refuses_to_delete_unmanaged_container() -> None:
+    manager = ContainerManager(Settings())
+    manager._docker = Mock(return_value=CompletedProcess([], 0, "other\n", ""))
+
+    try:
+        manager.delete("not-managed")
+    except LookupError:
+        pass
+    else:
+        raise AssertionError("unmanaged containers must not be deleted")
+
+    manager._docker.assert_called_once()

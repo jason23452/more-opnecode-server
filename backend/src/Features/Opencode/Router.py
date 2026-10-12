@@ -1,6 +1,6 @@
 import hmac
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Response, Request
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/opencode/containers", tags=["OpenCode containers"])
@@ -26,3 +26,19 @@ def create_container(request: Request, authorization: str | None = Header(defaul
     except Exception as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
     return ContainerCreated(**result)
+
+
+@router.delete("/{container_id}", status_code=204)
+def delete_container(
+    container_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> Response:
+    _authorize(request, authorization)
+    try:
+        request.app.state.container_manager.delete(container_id)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail="Managed container not found") from error
+    except Exception as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    return Response(status_code=204)
