@@ -64,7 +64,21 @@ def test_create_opencode_reports_capacity_limit_without_starting_container() -> 
     response = client.post("/api/opencode/containers", headers={"Authorization": "Bearer admin-secret"})
 
     assert response.status_code == 503
+    assert "container capacity reached" not in response.text
     manager.create.assert_called_once()
+
+
+def test_management_api_returns_safe_error_for_unexpected_manager_failure() -> None:
+    manager = Mock(spec=ContainerManager)
+    manager.list.side_effect = RuntimeError("docker socket /run/secrets/token failed")
+    app.state.container_manager = manager
+    app.state.settings = Settings(opencode_admin_token="admin-secret")
+
+    response = client.get("/api/opencode/containers", headers={"Authorization": "Bearer admin-secret"})
+
+    assert response.status_code == 503
+    assert "docker socket" not in response.text
+    assert "token" not in response.text
 
 
 def test_delete_opencode_requires_internal_management_token() -> None:
@@ -158,13 +172,16 @@ def test_tunnel_recovery_waits_for_consecutive_probe_failures_and_reuses_contain
     }])
     manager._probe = Mock(side_effect=[False, False, True])
     manager._docker = Mock(return_value=CompletedProcess([], 0, "", ""))
-    manager._read_tunnel_url = Mock(side_effect=["https://new.trycloudflare.com"])
+    manager._wait_for_recovered_tunnel = Mock(return_value="https://new.trycloudflare.com")
 
     manager.monitor_once()
     manager._docker.assert_not_called()
     manager.monitor_once()
 
-    manager._docker.assert_any_call("exec", "oc-1", "sh", "-c", "pkill cloudflared || true; cloudflared tunnel --url http://127.0.0.1:4096 >/tmp/cloudflared.log 2>&1 &", check=False)
+    assert "https://old.trycloudflare.com" in manager._wait_for_recovered_tunnel.call_args.args
+    assert manager._wait_for_recovered_tunnel.call_args.args[0] == "oc-1"
+    restart_command = manager._docker.call_args.args[4]
+    assert ": >/tmp/cloudflared.log" in restart_command
     assert manager.get("oc-1")["url"] == "https://new.trycloudflare.com"
     assert manager.get("oc-1")["status"] == "healthy"
 
@@ -182,6 +199,73 @@ def test_failed_tunnel_retries_report_unhealthy_without_removing_container() -> 
     assert all(call.args[0] == "exec" for call in manager._docker.call_args_list)
     assert manager._statuses["oc-1"] == "unhealthy"
     assert all("rm" not in call.args for call in manager._docker.call_args_list)
+
+
+def test_recovery_ignores_stale_url_and_probes_a_distinct_new_url(monkeypatch) -> None:
+    manager = ContainerManager(Settings(opencode_password="secret", opencode_startup_timeout=1))
+    manager._read_tunnel_url = Mock(side_effect=[
+        "https://old.trycloudflare.com", "https://fresh.trycloudflare.com",
+    ])
+    manager._probe = Mock(side_effect=[True])
+    monkeypatch.setattr("src.Features.Opencode.ContainerManager.time.sleep", lambda _: None)
+
+    recovered = manager._wait_for_recovered_tunnel("oc-1", "https://old.trycloudflare.com")
+
+    assert recovered == "https://fresh.trycloudflare.com"
+    manager._probe.assert_called_once_with("https://fresh.trycloudflare.com")
+
+
+def test_container_manager_create_applies_configured_cpu_memory_and_capacity_limit() -> None:
+    manager = ContainerManager(Settings(opencode_password="secret", opencode_container_cpu=1.5,
+                                        opencode_container_memory="3g", opencode_max_containers=2))
+    manager._docker = Mock(side_effect=[
+        CompletedProcess([], 0, "existing\n", ""),
+        CompletedProcess([], 0, "new-container\n", ""),
+    ])
+    manager._ensure_image = Mock()
+    manager._read_tunnel_url = Mock(return_value="https://new.trycloudflare.com")
+    manager._healthy = Mock(return_value=True)
+
+    result = manager.create()
+
+    assert result == {"id": "new-container", "url": "https://new.trycloudflare.com"}
+    run_args = manager._docker.call_args_list[1].args
+    assert "--cpus" in run_args and "1.5" in run_args
+    assert "--memory" in run_args and "3g" in run_args
+
+
+def test_container_manager_rejects_creation_at_configured_capacity() -> None:
+    manager = ContainerManager(Settings(opencode_password="secret", opencode_max_containers=1))
+    manager._docker = Mock(return_value=CompletedProcess([], 0, "existing\n", ""))
+    manager._ensure_image = Mock()
+
+    try:
+        manager.create()
+    except RuntimeError as error:
+        assert "capacity reached" in str(error)
+    else:
+        raise AssertionError("container capacity must be enforced")
+
+    manager._ensure_image.assert_not_called()
+
+
+def test_container_manager_cleans_up_container_when_initialization_times_out() -> None:
+    manager = ContainerManager(Settings(opencode_password="secret", opencode_startup_timeout=0))
+    manager._docker = Mock(side_effect=[
+        CompletedProcess([], 0, "", ""),
+        CompletedProcess([], 0, "new-container\n", ""),
+        CompletedProcess([], 0, "", ""),
+    ])
+    manager._ensure_image = Mock()
+
+    try:
+        manager.create()
+    except RuntimeError as error:
+        assert "did not become ready" in str(error)
+    else:
+        raise AssertionError("initialization timeout must fail")
+
+    assert manager._docker.call_args_list[-1].args == ("rm", "-f", "new-container")
 
 
 def test_get_opencode_container_requires_internal_management_token() -> None:

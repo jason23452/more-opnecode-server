@@ -10,6 +10,21 @@ import httpx
 import pytest
 
 
+def _assert_tunnel_no_longer_serves(url: str, password: str, timeout: float = 45) -> None:
+    deadline = time.monotonic() + timeout
+    last_status = None
+    while time.monotonic() < deadline:
+        try:
+            response = httpx.get(url + "/", auth=("opencode", password), timeout=5)
+            last_status = response.status_code
+            if response.status_code != 200:
+                return
+        except httpx.HTTPError:
+            return
+        time.sleep(1)
+    pytest.fail(f"deleted tunnel continued serving HTTP 200 for {timeout}s (last status: {last_status})")
+
+
 @pytest.mark.skipif(os.getenv("OPENCODE_DOCKER_E2E") != "1", reason="requires Docker daemon and Cloudflare Quick Tunnel")
 def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
     api_port = int(os.getenv("OPENCODE_E2E_API_PORT", "18080"))
@@ -118,8 +133,7 @@ def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
         )
         assert deleted.status_code == 204
         assert subprocess.run(["docker", "inspect", container_id], capture_output=True).returncode != 0
-        with pytest.raises(httpx.HTTPError):
-            httpx.get(recovered_url + "/", auth=("opencode", password), timeout=10)
+        _assert_tunnel_no_longer_serves(recovered_url, password)
         missing = httpx.delete(
             base_url + f"/api/opencode/containers/{container_id}", headers=headers, timeout=10,
         )

@@ -70,28 +70,39 @@ class ContainerManager:
                 self._failures[container_id] = failures
                 if failures < max(1, self.settings.opencode_tunnel_failure_threshold):
                     continue
-                if self._recover_tunnel(container_id):
-                    new_url = self._read_tunnel_url(container_id)
-                    if new_url and self._probe(new_url):
-                        self._latest_urls[container_id] = new_url
-                        self._statuses[container_id] = "healthy"
-                        self._failures[container_id] = 0
-                        continue
+                new_url = self._recover_tunnel(container_id, url)
+                if new_url:
+                    self._latest_urls[container_id] = new_url
+                    self._statuses[container_id] = "healthy"
+                    self._failures[container_id] = 0
+                    continue
                 self._statuses[container_id] = "unhealthy"
 
-    def _recover_tunnel(self, container_id: str) -> bool:
-        command = "pkill cloudflared || true; cloudflared tunnel --url http://127.0.0.1:4096 >/tmp/cloudflared.log 2>&1 &"
+    def _recover_tunnel(self, container_id: str, old_url: str) -> str:
+        command = "pkill cloudflared || true; : >/tmp/cloudflared.log; cloudflared tunnel --url http://127.0.0.1:4096 >/tmp/cloudflared.log 2>&1 &"
         for attempt in range(max(1, self.settings.opencode_tunnel_recovery_attempts)):
             result = self._docker("exec", container_id, "sh", "-c", command, check=False)
             if result.returncode == 0:
-                return True
+                return self._wait_for_recovered_tunnel(container_id, old_url)
             if attempt + 1 < self.settings.opencode_tunnel_recovery_attempts:
                 time.sleep(self.settings.opencode_tunnel_recovery_delay)
-        return False
+        return ""
 
-    def _read_tunnel_url(self, container_id: str) -> str:
+    def _wait_for_recovered_tunnel(self, container_id: str, old_url: str) -> str:
+        deadline = time.monotonic() + min(30, max(1, self.settings.opencode_startup_timeout))
+        while time.monotonic() < deadline:
+            url = self._read_tunnel_url(container_id, include_container_logs=False)
+            if url and url != old_url and self._probe(url):
+                return url
+            time.sleep(0.5)
+        return ""
+
+    def _read_tunnel_url(self, container_id: str, include_container_logs: bool = True) -> str:
         result = self._docker("exec", container_id, "sh", "-c", "cat /tmp/cloudflared.log", check=False)
-        urls = re.findall(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", result.stdout)
+        output = result.stdout
+        if include_container_logs and not output:
+            output = self._docker("logs", container_id, check=False).stdout
+        urls = re.findall(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", output)
         return urls[-1] if urls else ""
 
     def _probe(self, url: str) -> bool:
@@ -102,10 +113,6 @@ class ContainerManager:
         if state.returncode != 0:
             return None
         url = self._read_tunnel_url(container_id)
-        if not url:
-            logs = self._docker("logs", container_id, check=False).stdout
-            urls = re.findall(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", logs)
-            url = urls[-1] if urls else ""
         healthy = state.stdout.strip() == "true" and bool(url) and self._healthy(url)
         return {"id": container_id, "status": "healthy" if healthy else "unhealthy", "url": url}
 
@@ -128,10 +135,6 @@ class ContainerManager:
         try:
             while time.monotonic() < deadline:
                 url = self._read_tunnel_url(container_id)
-                if not url:
-                    logs = self._docker("logs", container_id, check=False).stdout
-                    urls = re.findall(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", logs)
-                    url = urls[-1] if urls else ""
                 if url and self._healthy(url):
                     return {"id": container_id, "url": url}
                 running = self._docker("inspect", "-f", "{{.State.Running}}", container_id, check=False)
