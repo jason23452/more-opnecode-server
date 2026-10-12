@@ -99,7 +99,7 @@ class ContainerManager:
                 self._statuses[container_id] = "unhealthy"
 
     def _recover_tunnel(self, container_id: str, old_url: str) -> str:
-        command = "pkill cloudflared || true; : >/tmp/cloudflared.log; cloudflared tunnel --url http://127.0.0.1:4096 >/tmp/cloudflared.log 2>&1 &"
+        command = "pkill cloudflared || true; rm -f /tmp/opencode-tunnel-url; : >/tmp/cloudflared.log; cloudflared tunnel --url http://127.0.0.1:4096 >/tmp/cloudflared.log 2>&1 &"
         for attempt in range(max(1, self.settings.opencode_tunnel_recovery_attempts)):
             result = self._docker("exec", container_id, "sh", "-c", command, check=False)
             if result.returncode == 0:
@@ -115,6 +115,7 @@ class ContainerManager:
         while time.monotonic() < deadline:
             url = self._read_tunnel_url(container_id, include_container_logs=False)
             if url and url != old_url and self._probe(url):
+                self._persist_tunnel_url(container_id, url)
                 return url
             time.sleep(0.5)
         return ""
@@ -125,7 +126,21 @@ class ContainerManager:
         if include_container_logs and not output:
             output = self._docker("logs", container_id, check=False).stdout
         urls = re.findall(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", output)
-        return urls[-1] if urls else ""
+        if urls:
+            return urls[-1]
+        persisted = self._docker("exec", container_id, "sh", "-c", "cat /tmp/opencode-tunnel-url", check=False)
+        persisted_urls = re.findall(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", persisted.stdout)
+        return persisted_urls[-1] if persisted_urls else ""
+
+    def _persist_tunnel_url(self, container_id: str, url: str) -> None:
+        try:
+            self._docker(
+                "exec", container_id, "sh", "-c", f"printf '%s' '{url}' > /tmp/opencode-tunnel-url",
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            # URL persistence is best-effort; the in-memory manager remains usable.
+            return
 
     def _probe(self, url: str) -> bool:
         return self._healthy(url)
@@ -174,6 +189,7 @@ class ContainerManager:
                         self._statuses[container_id] = "healthy"
                         self._failures[container_id] = 0
                         self._creating.discard(container_id)
+                    self._persist_tunnel_url(container_id, url)
                     return {"id": container_id, "url": url}
                 running = self._docker("inspect", "-f", "{{.State.Running}}", container_id, check=False)
                 if running.returncode != 0 or running.stdout.strip() != "true":

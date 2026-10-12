@@ -43,6 +43,57 @@ def test_wait_for_healthy_container_retries_until_status_and_url_match() -> None
     assert len(queried) == 2
 
 
+def test_external_probe_retries_transient_network_error_and_non_200() -> None:
+    responses = iter([
+        httpx.ConnectError("network unavailable"),
+        503,
+        200,
+    ])
+    attempts = []
+
+    def get(url: str, *, auth: tuple[str, str], timeout: float) -> httpx.Response:
+        attempts.append(url)
+        result = next(responses)
+        if isinstance(result, Exception):
+            raise result
+        return httpx.Response(result)
+
+    response = _probe_external_url(
+        "https://new.trycloudflare.com",
+        "password",
+        timeout=1,
+        interval=0,
+        get=get,
+    )
+
+    assert response.status_code == 200
+    assert len(attempts) == 3
+
+
+def _probe_external_url(
+    url: str,
+    password: str,
+    timeout: float = 75,
+    interval: float = 2,
+    get=httpx.get,
+) -> httpx.Response:
+    deadline = time.monotonic() + timeout
+    last_failure = "no response"
+    while True:
+        try:
+            response = get(url + "/", auth=("opencode", password), timeout=20)
+            if response.status_code == 200:
+                return response
+            last_failure = f"HTTP {response.status_code}"
+        except httpx.HTTPError as error:
+            last_failure = f"{type(error).__name__}: {error}"
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            pytest.fail(f"external URL {url!r} did not return HTTP 200 within {timeout}s (last failure: {last_failure})")
+        time.sleep(min(interval, remaining))
+
+
 def _assert_tunnel_no_longer_serves(url: str, password: str, timeout: float = 45) -> None:
     deadline = time.monotonic() + timeout
     last_status = None
@@ -95,7 +146,7 @@ def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
         container_id = payload["id"]
         assert "url" in payload
         assert password not in response.text
-        reachable = httpx.get(payload["url"] + "/", auth=("opencode", password), timeout=20)
+        reachable = _probe_external_url(payload["url"], password)
         assert reachable.status_code == 200
         headers = {"Authorization": f"Bearer {admin_token}"}
         invalid_headers = {"Authorization": "Bearer invalid-management-token"}
@@ -133,7 +184,7 @@ def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
             time.sleep(2)
         else:
             pytest.fail("Tunnel did not recover to a new healthy URL")
-        reachable = httpx.get(recovered_url + "/", auth=("opencode", password), timeout=20)
+        reachable = _probe_external_url(recovered_url, password)
         assert reachable.status_code == 200
         assert subprocess.run(
             ["docker", "exec", container_id, "sh", "-c", f"test \"$(cat /tmp/opencode-retention-marker)\" = '{marker}'"],

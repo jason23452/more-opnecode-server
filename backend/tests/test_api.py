@@ -182,6 +182,7 @@ def test_tunnel_recovery_waits_for_consecutive_probe_failures_and_reuses_contain
     assert "https://old.trycloudflare.com" in manager._wait_for_recovered_tunnel.call_args.args
     assert manager._wait_for_recovered_tunnel.call_args.args[0] == "oc-1"
     restart_command = manager._docker.call_args.args[4]
+    assert "rm -f /tmp/opencode-tunnel-url" in restart_command
     assert ": >/tmp/cloudflared.log" in restart_command
     assert manager.get("oc-1")["url"] == "https://new.trycloudflare.com"
     assert manager.get("oc-1")["status"] == "healthy"
@@ -232,12 +233,46 @@ def test_recovery_ignores_stale_url_and_probes_a_distinct_new_url(monkeypatch) -
     manager._probe.assert_called_once_with("https://fresh.trycloudflare.com")
 
 
+def test_recovery_persists_new_url_after_external_probe_succeeds(monkeypatch) -> None:
+    manager = ContainerManager(Settings(opencode_password="secret", opencode_startup_timeout=1))
+    manager._read_tunnel_url = Mock(return_value="https://fresh.trycloudflare.com")
+    manager._probe = Mock(return_value=True)
+    manager._persist_tunnel_url = Mock()
+    monkeypatch.setattr("src.Features.Opencode.ContainerManager.time.sleep", lambda _: None)
+
+    recovered = manager._wait_for_recovered_tunnel("oc-1", "https://old.trycloudflare.com")
+
+    assert recovered == "https://fresh.trycloudflare.com"
+    manager._persist_tunnel_url.assert_called_once_with("oc-1", recovered)
+
+
+def test_container_manager_rediscovers_recovered_url_after_manager_restart() -> None:
+    recovered_url = "https://fresh.trycloudflare.com"
+    manager = ContainerManager(Settings(opencode_password="secret"))
+    manager._docker = Mock(side_effect=[
+        CompletedProcess([], 0, "oc-1\n", ""),
+        CompletedProcess([], 0, "true\n", ""),
+        CompletedProcess([], 0, "", ""),
+        CompletedProcess([], 0, "", ""),
+        CompletedProcess([], 0, recovered_url + "\n", ""),
+    ])
+    manager._healthy = Mock(return_value=True)
+
+    rediscovered = manager.list()
+
+    assert rediscovered == [{"id": "oc-1", "status": "healthy", "url": recovered_url}]
+    assert manager._docker.call_args_list[4].args == (
+        "exec", "oc-1", "sh", "-c", "cat /tmp/opencode-tunnel-url",
+    )
+
+
 def test_container_manager_create_applies_configured_cpu_memory_and_capacity_limit() -> None:
     manager = ContainerManager(Settings(opencode_password="secret", opencode_container_cpu=1.5,
                                         opencode_container_memory="3g", opencode_max_containers=2))
     manager._docker = Mock(side_effect=[
         CompletedProcess([], 0, "existing\n", ""),
         CompletedProcess([], 0, "new-container\n", ""),
+        CompletedProcess([], 0, "", ""),
     ])
     manager._ensure_image = Mock()
     manager._read_tunnel_url = Mock(return_value="https://new.trycloudflare.com")
@@ -256,8 +291,11 @@ def test_create_then_immediate_list_keeps_initialized_tunnel_healthy() -> None:
     manager._docker = Mock(side_effect=[
         CompletedProcess([], 0, "", ""),
         CompletedProcess([], 0, "new-container\n", ""),
+        CompletedProcess([], 0, "", ""),
         CompletedProcess([], 0, "new-container\n", ""),
         CompletedProcess([], 0, "true\n", ""),
+        CompletedProcess([], 0, "", ""),
+        CompletedProcess([], 0, "https://new.trycloudflare.com\n", ""),
     ])
     manager._ensure_image = Mock()
     manager._read_tunnel_url = Mock(return_value="https://new.trycloudflare.com")
@@ -398,6 +436,7 @@ def test_container_manager_uses_full_ids_when_checking_creation_capacity() -> No
     manager._docker = Mock(side_effect=[
         CompletedProcess([], 0, f"{full_id}\n", ""),
         CompletedProcess([], 0, "new-container\n", ""),
+        CompletedProcess([], 0, "", ""),
     ])
     manager._ensure_image = Mock()
     manager._read_tunnel_url = Mock(return_value="https://new.trycloudflare.com")
