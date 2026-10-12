@@ -58,6 +58,10 @@ src/
 | `OPENCODE_MAX_CONTAINERS` | `4` | 同時執行容器上限 |
 | `OPENCODE_STARTUP_TIMEOUT` | `180` | OpenCode 與 Quick Tunnel 初始化秒數上限 |
 | `OPENCODE_IMAGE` | `dynamic-opencode:latest` | 固定 OpenCode 容器映像標籤 |
+| `OPENCODE_TUNNEL_PROBE_INTERVAL` | `30` | Tunnel 外部健康探測間隔（秒） |
+| `OPENCODE_TUNNEL_FAILURE_THRESHOLD` | `3` | 觸發 Tunnel 重建前的連續探測失敗次數 |
+| `OPENCODE_TUNNEL_RECOVERY_ATTEMPTS` | `3` | 每輪 Tunnel 重建嘗試次數 |
+| `OPENCODE_TUNNEL_RECOVERY_DELAY` | `2` | 重建失敗後的等待秒數 |
 
 範例：
 
@@ -69,7 +73,7 @@ OPENCODE_ADMIN_TOKEN=replace-with-an-internal-token
 
 管理端點 `POST /api/opencode/containers` 需帶 `Authorization: Bearer <OPENCODE_ADMIN_TOKEN>`。成功回傳 `201` 與 `{ "id", "url" }`；若初始化失敗或達容器數量上限，回傳 `503`。API 不回傳 OpenCode 密碼。
 
-真實 Docker/Cloudflare 黑箱測試需可用 Docker daemon 與外網，設定 `OPENCODE_DOCKER_E2E=1` 後執行 `uv run pytest tests/test_opencode_docker_e2e.py -v`。測試會啟動實際後端，呼叫管理 API，使用回傳 URL 及密碼探測 OpenCode，並清理測試容器。
+真實 Docker/Cloudflare 黑箱測試需可用 Docker daemon 與外網，設定 `OPENCODE_DOCKER_E2E=1` 後執行 `uv run pytest tests/test_opencode_docker_e2e.py -v`。測試會啟動實際後端，呼叫管理 API，驗證 Tunnel 故障後 URL 更新、可連線且原容器工作資料保留，最後清理測試容器。
 
 ## 統一錯誤回應
 

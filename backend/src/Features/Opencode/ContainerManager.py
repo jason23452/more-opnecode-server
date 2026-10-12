@@ -12,8 +12,14 @@ class ContainerManager:
 
     def __init__(self, settings):
         self.settings = settings
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._failures: dict[str, int] = {}
+        self._latest_urls: dict[str, str] = {}
+        self._statuses: dict[str, str] = {}
         self._discover()
+        self._stop = threading.Event()
+        self._monitor = threading.Thread(target=self._monitor_loop, name="opencode-tunnel-monitor", daemon=True)
+        self._monitor.start()
 
     def list(self) -> list[dict[str, str]]:
         with self._lock:
@@ -30,16 +36,76 @@ class ContainerManager:
         for container_id in result.stdout.splitlines():
             details = self._inspect(container_id)
             if details is not None:
+                details["url"] = self._latest_urls.get(container_id, details["url"])
+                details["status"] = self._statuses.get(container_id, details["status"])
+                self._latest_urls[container_id] = details["url"]
+                self._statuses[container_id] = details["status"]
                 containers.append(details)
+        present = {container["id"] for container in containers}
+        self._failures = {key: value for key, value in self._failures.items() if key in present}
+        self._latest_urls = {key: value for key, value in self._latest_urls.items() if key in present}
+        self._statuses = {key: value for key, value in self._statuses.items() if key in present}
         return containers
+
+    def _monitor_loop(self) -> None:
+        while not self._stop.wait(max(0.1, self.settings.opencode_tunnel_probe_interval)):
+            try:
+                self.monitor_once()
+            except Exception:
+                # A Docker/API transient must not terminate future monitoring.
+                continue
+
+    def monitor_once(self) -> None:
+        with self._lock:
+            for container in self._discover():
+                container_id, url = container["id"], container["url"]
+                if not url:
+                    self._statuses[container_id] = "unhealthy"
+                    continue
+                if self._probe(url):
+                    self._failures[container_id] = 0
+                    self._statuses[container_id] = "healthy"
+                    continue
+                failures = self._failures.get(container_id, 0) + 1
+                self._failures[container_id] = failures
+                if failures < max(1, self.settings.opencode_tunnel_failure_threshold):
+                    continue
+                if self._recover_tunnel(container_id):
+                    new_url = self._read_tunnel_url(container_id)
+                    if new_url and self._probe(new_url):
+                        self._latest_urls[container_id] = new_url
+                        self._statuses[container_id] = "healthy"
+                        self._failures[container_id] = 0
+                        continue
+                self._statuses[container_id] = "unhealthy"
+
+    def _recover_tunnel(self, container_id: str) -> bool:
+        command = "pkill cloudflared || true; cloudflared tunnel --url http://127.0.0.1:4096 >/tmp/cloudflared.log 2>&1 &"
+        for attempt in range(max(1, self.settings.opencode_tunnel_recovery_attempts)):
+            result = self._docker("exec", container_id, "sh", "-c", command, check=False)
+            if result.returncode == 0:
+                return True
+            if attempt + 1 < self.settings.opencode_tunnel_recovery_attempts:
+                time.sleep(self.settings.opencode_tunnel_recovery_delay)
+        return False
+
+    def _read_tunnel_url(self, container_id: str) -> str:
+        result = self._docker("exec", container_id, "sh", "-c", "cat /tmp/cloudflared.log", check=False)
+        urls = re.findall(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", result.stdout)
+        return urls[-1] if urls else ""
+
+    def _probe(self, url: str) -> bool:
+        return self._healthy(url)
 
     def _inspect(self, container_id: str) -> dict[str, str] | None:
         state = self._docker("inspect", "-f", "{{.State.Running}}", container_id, check=False)
         if state.returncode != 0:
             return None
-        logs = self._docker("logs", container_id, check=False).stdout
-        urls = re.findall(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", logs)
-        url = urls[-1] if urls else ""
+        url = self._read_tunnel_url(container_id)
+        if not url:
+            logs = self._docker("logs", container_id, check=False).stdout
+            urls = re.findall(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", logs)
+            url = urls[-1] if urls else ""
         healthy = state.stdout.strip() == "true" and bool(url) and self._healthy(url)
         return {"id": container_id, "status": "healthy" if healthy else "unhealthy", "url": url}
 
@@ -61,10 +127,13 @@ class ContainerManager:
         deadline = time.monotonic() + self.settings.opencode_startup_timeout
         try:
             while time.monotonic() < deadline:
-                logs = self._docker("logs", container_id, check=False).stdout
-                urls = re.findall(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", logs)
-                if urls and self._healthy(urls[-1]):
-                    return {"id": container_id, "url": urls[-1]}
+                url = self._read_tunnel_url(container_id)
+                if not url:
+                    logs = self._docker("logs", container_id, check=False).stdout
+                    urls = re.findall(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", logs)
+                    url = urls[-1] if urls else ""
+                if url and self._healthy(url):
+                    return {"id": container_id, "url": url}
                 running = self._docker("inspect", "-f", "{{.State.Running}}", container_id, check=False)
                 if running.returncode != 0 or running.stdout.strip() != "true":
                     break
@@ -95,6 +164,11 @@ class ContainerManager:
             return response.returncode == 0
         except (OSError, subprocess.TimeoutExpired):
             return False
+
+    def close(self) -> None:
+        self._stop.set()
+        if hasattr(self, "_monitor"):
+            self._monitor.join(timeout=2)
 
     def _ensure_image(self) -> None:
         exists = self._docker("image", "inspect", self.settings.opencode_image, check=False)

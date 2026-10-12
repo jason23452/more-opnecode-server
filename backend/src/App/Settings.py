@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     opencode_max_containers: int = 4
     opencode_startup_timeout: int = 180
     opencode_image: str = "dynamic-opencode:latest"
+    opencode_tunnel_probe_interval: float = 30.0
+    opencode_tunnel_failure_threshold: int = 3
+    opencode_tunnel_recovery_attempts: int = 3
+    opencode_tunnel_recovery_delay: float = 2.0
 
     model_config = SettingsConfigDict(
         env_file=".env",
