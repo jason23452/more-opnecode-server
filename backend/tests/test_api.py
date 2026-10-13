@@ -74,10 +74,28 @@ def test_create_opencode_waits_for_ready_container_and_hides_password() -> None:
         "id": "oc-123", "url": "https://quiet-fox.trycloudflare.com",
         "upload_url": "http://testserver/api/opencode/containers/oc-123/upload",
         "upload_token": "container-upload-token",
-        "cli_install_command": "python -m pip install ./cli",
-        "upload_command": "opencode-project upload --url http://testserver/api/opencode/containers/oc-123/upload --token container-upload-token --project .",
+        "cli_install_command": "uv tool install ./cli",
+        "upload_command": "opencode-project upload --url http://testserver/api/opencode/containers/oc-123/upload --token=container-upload-token --project .",
     }
     assert "shared-secret" not in response.text
+
+
+def test_create_opencode_upload_command_passes_leading_dash_token_safely() -> None:
+    manager = Mock(spec=ContainerManager)
+    manager.create.return_value = {
+        "id": "oc-123", "url": "https://quiet-fox.trycloudflare.com",
+        "upload_token": "-token-starting-with-dash",
+    }
+    app.state.container_manager = manager
+    app.state.settings = Settings(opencode_admin_token="admin-secret")
+
+    response = client.post("/api/opencode/containers", headers={"Authorization": "Bearer admin-secret"})
+
+    assert response.status_code == 201
+    assert response.json()["upload_command"] == (
+        "opencode-project upload --url http://testserver/api/opencode/containers/oc-123/upload "
+        "--token=-token-starting-with-dash --project ."
+    )
 
 
 def test_upload_api_requires_container_token_and_writes_only_to_target_workspace() -> None:
