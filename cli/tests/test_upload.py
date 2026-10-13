@@ -19,9 +19,11 @@ class UploadTests(unittest.TestCase):
             (root / "dist" / "bundle.js").write_text("large")
 
             archive = create_archive(root)
-
-            with zipfile.ZipFile(io.BytesIO(archive)) as project:
-                self.assertEqual(project.namelist(), ["main.py"])
+            try:
+                with zipfile.ZipFile(archive) as project:
+                    self.assertEqual(project.namelist(), ["main.py"])
+            finally:
+                archive.unlink()
 
     def test_upload_retries_failed_transfer_using_same_container_capability(self):
         responses = [OSError("connection interrupted"), 204]
@@ -37,6 +39,55 @@ class UploadTests(unittest.TestCase):
 
         self.assertEqual(sender.call_count, 2)
         self.assertEqual(sender.call_args_list[0].args, sender.call_args_list[1].args)
+
+    def test_archive_above_single_request_limit_uses_chunk_protocol(self):
+        import json
+        with patch("opencode_project.upload._request", side_effect=[
+            json.dumps({"session_id": "a" * 32}).encode(), b"", b"", b"", b"",
+        ]) as request, patch("opencode_project.upload.CHUNK_BYTES", 32 * 1024 * 1024):
+            from opencode_project.upload import MAX_UPLOAD_BYTES
+            upload_archive("https://container.trycloudflare.com/upload", "token", b"x" * (MAX_UPLOAD_BYTES + 1))
+        self.assertEqual(request.call_count, 5)
+
+    def test_large_archive_is_chunked_and_refreshes_tunnel_target_after_failure(self):
+        import json
+        import opencode_project.upload as upload
+        monkey = unittest.mock.patch.multiple(upload, MAX_UPLOAD_BYTES=4, CHUNK_BYTES=3)
+        with monkey, patch("opencode_project.upload._request") as request, \
+                patch("opencode_project.upload._refresh_target", return_value="https://new.example") as refresh, \
+                patch("opencode_project.upload.time.sleep"):
+            request.side_effect = [
+                json.dumps({"session_id": "a" * 32}).encode(),
+                OSError("old Tunnel failed"), b"", b"", b"", b"",
+            ]
+            upload.upload_archive("https://old.example/upload", "token", b"abcdefgh", retries=2,
+                                  refresh_url="https://control/upload-target")
+
+        refresh.assert_called_once_with("https://control/upload-target", "token")
+        chunk_calls = [call for call in request.call_args_list if "/chunks/" in call.args[0]]
+        self.assertEqual([call.args[0].rsplit("/", 1)[1] for call in chunk_calls], ["0", "0", "1", "2"])
+        self.assertTrue(all("api" not in call.args[0] for call in chunk_calls))
+        session_payload = json.loads(request.call_args_list[0].args[2])
+        self.assertRegex(session_payload["session_id"], r"^[0-9a-f]{32}$")
+
+    def test_refresh_target_normalizes_upload_endpoint_to_tunnel_root(self):
+        import json
+        from opencode_project.upload import _refresh_target
+        with patch("opencode_project.upload._request", return_value=json.dumps({
+            "upload_url": "https://fresh.example/upload",
+        }).encode()):
+            self.assertEqual(_refresh_target("https://control/target", "token"), "https://fresh.example")
+
+    def test_lost_session_creation_response_retries_with_same_idempotency_metadata(self):
+        import json
+        import opencode_project.upload as upload
+        with patch.multiple(upload, MAX_UPLOAD_BYTES=1, CHUNK_BYTES=3), \
+                patch("opencode_project.upload._request") as request, \
+                patch("opencode_project.upload.time.sleep"):
+            request.side_effect = [OSError("response lost"), json.dumps({"session_id": "f" * 32}).encode(), b"", b"", b""]
+            upload.upload_archive("https://container/upload", "token", b"abcd", retries=2)
+        first, retry = (json.loads(call.args[2]) for call in request.call_args_list[:2])
+        self.assertEqual(first, retry)
 
     def test_connect_relays_terminal_input_and_displays_remote_output(self):
         from opencode_project.connect import connect_terminal

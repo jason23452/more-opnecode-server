@@ -25,6 +25,7 @@ class ContainerCreated(BaseModel):
     id: str
     url: str
     upload_url: str
+    upload_target_url: str
     upload_token: str
     cli_install_commands: dict[str, str]
     upload_command: str
@@ -85,13 +86,18 @@ def create_container(
         cli_install_commands=_cli_install_commands(
             request.app.state.settings.opencode_cli_release_url
         ),
-        upload_url=str(request.base_url).rstrip("/")
-        + f"{request.app.state.settings.api_prefix}/opencode/containers/{result['id']}/upload",
+        upload_url=result["url"].rstrip("/") + "/upload",
+        upload_target_url=(
+            ("https" if request.url.scheme == "https" else "http") + "://" + request.url.netloc
+            + f"{request.app.state.settings.api_prefix}/opencode/containers/{result['id']}/upload-target"
+        ),
         upload_command=(
             "opencode-project upload --url "
-            + str(request.base_url).rstrip("/")
-            + f"{request.app.state.settings.api_prefix}/opencode/containers/{result['id']}/upload"
-            + f" --token={result['upload_token']} --project ."
+            + result["url"].rstrip("/") + "/upload"
+            + f" --token={result['upload_token']} --refresh-url="
+            + (("https" if request.url.scheme == "https" else "http") + "://" + request.url.netloc
+               + f"{request.app.state.settings.api_prefix}/opencode/containers/{result['id']}/upload-target")
+            + " --project ."
         ),
         connect_url=("ws" if request.url.scheme == "http" else "wss") + "://" + request.url.netloc
         + f"{request.app.state.settings.api_prefix}/opencode/containers/{result['id']}/connect",
@@ -103,6 +109,22 @@ def create_container(
             + f" --token={connect_token}"
         ),
     )
+
+
+@router.get("/{container_id}/upload-target")
+def get_upload_target(
+    container_id: str,
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> dict[str, str]:
+    token = credentials.credentials if credentials else ""
+    try:
+        target = request.app.state.container_manager.upload_target(container_id, token)
+    except PermissionError as error:
+        raise HTTPException(status_code=401, detail="Invalid container upload token") from error
+    if target is None:
+        raise HTTPException(status_code=404, detail="Container upload target not found")
+    return {"upload_url": target + "/upload"}
 
 
 @router.websocket("/{container_id}/connect")
@@ -168,31 +190,6 @@ async def connect_tui(websocket: WebSocket, container_id: str) -> None:
         if output_stream is not None:
             output_stream.close()
         manager.close_tui(session)
-
-
-@router.put("/{container_id}/upload", status_code=204)
-async def upload_project(
-    container_id: str,
-    request: Request,
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-) -> Response:
-    if credentials is None:
-        raise HTTPException(status_code=401, detail="Container upload token required")
-    archive = await request.body()
-    if len(archive) > 512 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="Project archive exceeds 512 MiB")
-    token = credentials.credentials if credentials else ""
-    try:
-        request.app.state.container_manager.upload(container_id, token, archive)
-    except PermissionError as error:
-        raise HTTPException(status_code=401, detail="Invalid container upload token") from error
-    except LookupError as error:
-        raise HTTPException(status_code=404, detail="Managed container not found") from error
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail="Invalid project archive") from error
-    except Exception as error:
-        raise _service_unavailable("Failed to upload project to container %s", container_id) from error
-    return Response(status_code=204)
 
 
 @router.get("", response_model=list[ContainerStatus])

@@ -24,3 +24,15 @@ def test_opencode_image_selects_cloudflared_for_supported_target_architectures()
     assert "arm64) cloudflared_arch=arm64" in contents
     assert "Unsupported TARGETARCH" in contents
     assert "cloudflared-linux-${cloudflared_arch}" in contents
+
+
+def test_opencode_image_routes_upload_and_normal_http_to_separate_container_services() -> None:
+    feature_dir = Path(__file__).parents[1] / "src/Features/Opencode"
+    dockerfile = (feature_dir / "Dockerfile").read_text()
+    ingress = (feature_dir / "ingress.conf").read_text()
+
+    assert "COPY upload_receiver.py /usr/local/bin/opencode-upload-receiver.py" in dockerfile
+    assert "location = /upload" in ingress
+    assert "proxy_pass http://127.0.0.1:4097/upload" in ingress
+    assert "proxy_pass http://127.0.0.1:4096" in ingress
+    assert "client_max_body_size 95m" in ingress

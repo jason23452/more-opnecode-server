@@ -1,6 +1,6 @@
 FROM node:22-bookworm-slim
 ARG TARGETARCH
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates python3 python3-venv procps && \
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates python3 python3-venv procps nginx && \
     curl -LsSf https://astral.sh/uv/install.sh | sh && \
     npm install --global pnpm opencode-ai @opencode-ai/sdk && \
     case "$TARGETARCH" in \
@@ -13,6 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 ENV PATH="/root/.local/bin:${PATH}"
 COPY tunnel-supervisor.sh /usr/local/bin/tunnel-supervisor.sh
 COPY pty_runner.py /usr/local/bin/opencode-pty-runner
+COPY upload_receiver.py /usr/local/bin/opencode-upload-receiver.py
+COPY ingress.conf /etc/nginx/nginx.conf
 RUN chmod +x /usr/local/bin/tunnel-supervisor.sh
 EXPOSE 4096
-CMD ["sh", "-c", "opencode serve --hostname 0.0.0.0 --port 4096 & opencode_pid=$!; sleep 3; /usr/local/bin/tunnel-supervisor.sh & tunnel_supervisor_pid=$!; wait $opencode_pid; server_status=$?; kill -TERM $tunnel_supervisor_pid 2>/dev/null || true; wait $tunnel_supervisor_pid 2>/dev/null || true; exit $server_status"]
+CMD ["sh", "-c", "opencode serve --hostname 127.0.0.1 --port 4096 & opencode_pid=$!; python3 /usr/local/bin/opencode-upload-receiver.py & receiver_pid=$!; /usr/local/bin/tunnel-supervisor.sh & tunnel_pid=$!; nginx -g 'daemon off;' & nginx_pid=$!; wait $opencode_pid; status=$?; kill $receiver_pid $tunnel_pid $nginx_pid 2>/dev/null || true; exit $status"]
