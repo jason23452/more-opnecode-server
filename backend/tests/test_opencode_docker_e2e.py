@@ -158,10 +158,13 @@ def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
             with open(project_path, "w", encoding="utf-8") as source:
                 source.write(marker)
             cli_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../cli"))
-            subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", cli_root], check=True)
+            subprocess.run(
+                ["uv", "pip", "install", "--python", sys.executable, "--quiet", cli_root],
+                check=True,
+            )
             subprocess.run([
                 sys.executable, "-m", "opencode_project.cli", "upload",
-                "--url", payload["upload_url"], "--token", payload["upload_token"],
+                "--url", payload["upload_url"], f"--token={payload['upload_token']}",
                 "--project", project,
             ], check=True)
             assert subprocess.run([
