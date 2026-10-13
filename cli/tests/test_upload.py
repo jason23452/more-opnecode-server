@@ -193,7 +193,8 @@ class UploadTests(unittest.TestCase):
                 return self.characters.pop(0)
 
         with patch.object(connect, "msvcrt", FakeMsvcrt()), \
-                patch.object(connect.sys, "stdin") as stdin:
+                patch.object(connect.sys, "stdin") as stdin, \
+                patch.object(connect, "terminal_size", return_value=(80, 24)):
             stdin.isatty.return_value = True
             self.assertEqual(connect._terminal_input(), b"okx")
 
