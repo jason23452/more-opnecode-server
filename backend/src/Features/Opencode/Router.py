@@ -1,18 +1,11 @@
-import asyncio
 import hmac
 import logging
-import os
-import select
-import subprocess
 
-from fastapi.security.utils import get_authorization_scheme_param
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, WebSocket, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
-
-from .DockerCli import docker_command
 
 router = APIRouter(prefix="/opencode/containers", tags=["OpenCode containers"])
 logger = logging.getLogger(__name__)
@@ -25,7 +18,6 @@ class ContainerCreated(BaseModel):
     id: str
     url: str
     upload_url: str
-    upload_target_url: str
     upload_token: str
     cli_install_commands: dict[str, str]
     upload_command: str
@@ -38,6 +30,21 @@ class ContainerStatus(BaseModel):
     id: str
     status: Literal["healthy", "unhealthy"]
     url: str
+    upload_url: str
+    connect_url: str
+
+
+def _tunnel_targets(url: str) -> tuple[str, str]:
+    base = url.rstrip("/")
+    if not base:
+        return "", ""
+    websocket_scheme = "wss" if base.startswith("https://") else "ws"
+    return base + "/upload", websocket_scheme + "://" + base.split("://", 1)[1] + "/connect"
+
+
+def _container_status(container: dict[str, str]) -> ContainerStatus:
+    upload_url, connect_url = _tunnel_targets(container["url"])
+    return ContainerStatus(**container, upload_url=upload_url, connect_url=connect_url)
 
 
 def _authorize(request: Request, credentials: HTTPAuthorizationCredentials | None) -> None:
@@ -81,115 +88,26 @@ def create_container(
     except Exception as error:
         raise _service_unavailable("Failed to create OpenCode container") from error
     connect_token = result.pop("connect_token")
+    _, connect_url = _tunnel_targets(result["url"])
     return ContainerCreated(
         **result,
         cli_install_commands=_cli_install_commands(
             request.app.state.settings.opencode_cli_release_url
         ),
         upload_url=result["url"].rstrip("/") + "/upload",
-        upload_target_url=(
-            ("https" if request.url.scheme == "https" else "http") + "://" + request.url.netloc
-            + f"{request.app.state.settings.api_prefix}/opencode/containers/{result['id']}/upload-target"
-        ),
         upload_command=(
             "opencode-project upload --url "
             + result["url"].rstrip("/") + "/upload"
-            + f" --token={result['upload_token']} --refresh-url="
-            + (("https" if request.url.scheme == "https" else "http") + "://" + request.url.netloc
-               + f"{request.app.state.settings.api_prefix}/opencode/containers/{result['id']}/upload-target")
-            + " --project ."
+            + f" --token={result['upload_token']} --project ."
         ),
-        connect_url=("ws" if request.url.scheme == "http" else "wss") + "://" + request.url.netloc
-        + f"{request.app.state.settings.api_prefix}/opencode/containers/{result['id']}/connect",
+        connect_url=connect_url,
         connect_token=connect_token,
         connect_command=(
             "opencode-project connect --url "
-            + (("ws" if request.url.scheme == "http" else "wss") + "://" + request.url.netloc)
-            + f"{request.app.state.settings.api_prefix}/opencode/containers/{result['id']}/connect"
+            + connect_url
             + f" --token={connect_token}"
         ),
     )
-
-
-@router.get("/{container_id}/upload-target")
-def get_upload_target(
-    container_id: str,
-    request: Request,
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-) -> dict[str, str]:
-    token = credentials.credentials if credentials else ""
-    try:
-        target = request.app.state.container_manager.upload_target(container_id, token)
-    except PermissionError as error:
-        raise HTTPException(status_code=401, detail="Invalid container upload token") from error
-    if target is None:
-        raise HTTPException(status_code=404, detail="Container upload target not found")
-    return {"upload_url": target + "/upload"}
-
-
-@router.websocket("/{container_id}/connect")
-async def connect_tui(websocket: WebSocket, container_id: str) -> None:
-    scheme, token = get_authorization_scheme_param(websocket.headers.get("authorization", ""))
-    if scheme.lower() != "bearer":
-        token = ""
-    manager = websocket.app.state.container_manager
-    try:
-        session = manager.open_tui(container_id, token)
-    except PermissionError:
-        await websocket.accept()
-        await websocket.close(code=4401, reason="連線授權無效，請使用建立容器時提供的連線資訊")
-        return
-    except LookupError:
-        await websocket.accept()
-        await websocket.close(code=4404, reason="找不到此 OpenCode 容器")
-        return
-    except RuntimeError:
-        await websocket.accept()
-        await websocket.close(code=4409, reason="此容器已有 TUI 工作階段，請稍後重試")
-        return
-
-    process = None
-    output_stream = None
-    try:
-        await websocket.accept()
-        process = subprocess.Popen(
-            docker_command("exec", "-i", container_id, "python3", "/usr/local/bin/opencode-pty-runner",
-                           "sh", "-lc", "cd /workspace/project && exec opencode ."),
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        )
-        output_stream = process.stdout
-        while process.poll() is None:
-            readable, _, _ = select.select([output_stream], [], [], 0.02)
-            if readable:
-                output = os.read(output_stream.fileno(), 65536)
-                if output:
-                    await websocket.send_bytes(output)
-            try:
-                message = await asyncio.wait_for(websocket.receive(), timeout=0.02)
-            except asyncio.TimeoutError:
-                continue
-            if message.get("type") == "websocket.disconnect":
-                break
-            data = message.get("bytes")
-            if data:
-                process.stdin.write(data)
-                process.stdin.flush()
-            elif message.get("text") == "\x04":
-                break
-    except Exception:
-        logger.info("Remote TUI session disconnected for %s", container_id)
-    finally:
-        if process and process.poll() is None:
-            if process.stdin:
-                process.stdin.close()
-            try:
-                process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-        if output_stream is not None:
-            output_stream.close()
-        manager.close_tui(session)
 
 
 @router.get("", response_model=list[ContainerStatus])
@@ -199,7 +117,7 @@ def list_containers(
 ) -> list[ContainerStatus]:
     _authorize(request, credentials)
     try:
-        return [ContainerStatus(**container) for container in request.app.state.container_manager.list()]
+        return [_container_status(container) for container in request.app.state.container_manager.list()]
     except Exception as error:
         raise _service_unavailable("Failed to list OpenCode containers") from error
 
@@ -217,7 +135,7 @@ def get_container(
         raise _service_unavailable("Failed to retrieve OpenCode container %s", container_id) from error
     if container is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Container not found")
-    return ContainerStatus(**container)
+    return _container_status(container)
 
 
 @router.delete("/{container_id}", status_code=204)

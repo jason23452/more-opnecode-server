@@ -34,5 +34,11 @@ def test_opencode_image_routes_upload_and_normal_http_to_separate_container_serv
     assert "COPY upload_receiver.py /usr/local/bin/opencode-upload-receiver.py" in dockerfile
     assert "location = /upload" in ingress
     assert "proxy_pass http://127.0.0.1:4097/upload" in ingress
+    assert "location = /connect" in ingress
+    assert "proxy_pass http://127.0.0.1:4098" in ingress
+    assert "COPY tui_relay.py /usr/local/bin/opencode-tui-relay.py" in dockerfile
+    assert '"-e", f"OPENCODE_CONNECT_TOKEN={connect_token}"' in (
+        feature_dir / "ContainerManager.py"
+    ).read_text()
     assert "proxy_pass http://127.0.0.1:4096" in ingress
     assert "client_max_body_size 95m" in ingress

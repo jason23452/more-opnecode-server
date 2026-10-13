@@ -73,17 +73,16 @@ def test_create_opencode_waits_for_ready_container_and_hides_password() -> None:
     assert response.json() == {
         "id": "oc-123", "url": "https://quiet-fox.trycloudflare.com",
         "upload_url": "https://quiet-fox.trycloudflare.com/upload",
-        "upload_target_url": "http://testserver/api/opencode/containers/oc-123/upload-target",
         "upload_token": "container-upload-token",
         "cli_install_commands": {
             "windows_powershell": "$env:OPENCODE_PROJECT_RELEASE_URL = 'https://github.com/jason23452/more-opnecode-server/releases/latest/download'; irm 'https://github.com/jason23452/more-opnecode-server/releases/latest/download/install.ps1' | iex",
             "macos": "curl -fsSL 'https://github.com/jason23452/more-opnecode-server/releases/latest/download/install.sh' | OPENCODE_PROJECT_RELEASE_URL='https://github.com/jason23452/more-opnecode-server/releases/latest/download' sh",
             "linux": "curl -fsSL 'https://github.com/jason23452/more-opnecode-server/releases/latest/download/install.sh' | OPENCODE_PROJECT_RELEASE_URL='https://github.com/jason23452/more-opnecode-server/releases/latest/download' sh",
         },
-        "upload_command": "opencode-project upload --url https://quiet-fox.trycloudflare.com/upload --token=container-upload-token --refresh-url=http://testserver/api/opencode/containers/oc-123/upload-target --project .",
-        "connect_url": "ws://testserver/api/opencode/containers/oc-123/connect",
+        "upload_command": "opencode-project upload --url https://quiet-fox.trycloudflare.com/upload --token=container-upload-token --project .",
+        "connect_url": "wss://quiet-fox.trycloudflare.com/connect",
         "connect_token": "container-connect-token",
-        "connect_command": "opencode-project connect --url ws://testserver/api/opencode/containers/oc-123/connect --token=container-connect-token",
+        "connect_command": "opencode-project connect --url wss://quiet-fox.trycloudflare.com/connect --token=container-connect-token",
     }
     assert "shared-secret" not in response.text
 
@@ -119,56 +118,22 @@ def test_create_opencode_uses_configured_cli_release_url() -> None:
     }
 
 
-def test_upload_target_control_endpoint_requires_container_token_and_returns_only_target() -> None:
+def test_upload_target_control_endpoint_is_removed() -> None:
     manager = Mock(spec=ContainerManager)
-    manager.upload_target.side_effect = PermissionError("invalid upload token")
     app.state.container_manager = manager
     app.state.settings = Settings()
-    denied = client.get("/api/opencode/containers/oc-123/upload-target", headers={"Authorization": "Bearer wrong"})
-    assert denied.status_code == 401
-    manager.upload_target.side_effect = None
-    manager.upload_target.return_value = "https://fresh.trycloudflare.com"
-
-    response = client.get("/api/opencode/containers/oc-123/upload-target", headers={"Authorization": "Bearer upload-token"})
-
-    assert response.status_code == 200
-    assert response.json() == {"upload_url": "https://fresh.trycloudflare.com/upload"}
-    manager.upload_target.assert_called_with("oc-123", "upload-token")
+    response = client.get("/api/opencode/containers/oc-123/upload-target")
+    assert response.status_code == 404
+    assert not hasattr(manager, "upload_target")
 
 
-def test_connect_websocket_rejects_invalid_container_capability_with_actionable_code() -> None:
-    from starlette.websockets import WebSocketDisconnect
-
+def test_management_api_does_not_expose_a_tui_websocket_relay() -> None:
     manager = Mock(spec=ContainerManager)
-    manager.open_tui.side_effect = PermissionError("invalid capability")
-    app.state.container_manager = manager
-    app.state.settings = Settings(opencode_admin_token="admin-secret")
-
-    with client.websocket_connect("/api/opencode/containers/oc-123/connect?token=wrong") as websocket:
-        try:
-            websocket.receive_bytes()
-        except WebSocketDisconnect as error:
-            assert error.code == 4401
-            assert "授權無效" in error.reason
-        else:
-            raise AssertionError("invalid capability must not open the terminal")
-
-
-def test_connect_websocket_reports_busy_container_without_opening_second_session() -> None:
-    from starlette.websockets import WebSocketDisconnect
-
-    manager = Mock(spec=ContainerManager)
-    manager.open_tui.side_effect = RuntimeError("already connected")
     app.state.container_manager = manager
 
-    with client.websocket_connect("/api/opencode/containers/oc-123/connect?token=valid") as websocket:
-        try:
-            websocket.receive_bytes()
-        except WebSocketDisconnect as error:
-            assert error.code == 4409
-            assert "已有 TUI 工作階段" in error.reason
-        else:
-            raise AssertionError("second TUI session must be refused")
+    response = client.get("/api/opencode/containers/oc-123/connect")
+
+    assert response.status_code == 404
 
 
 def test_create_opencode_upload_command_passes_leading_dash_token_safely() -> None:
@@ -185,7 +150,7 @@ def test_create_opencode_upload_command_passes_leading_dash_token_safely() -> No
     assert response.status_code == 201
     assert response.json()["upload_command"] == (
         "opencode-project upload --url https://quiet-fox.trycloudflare.com/upload "
-        "--token=-token-starting-with-dash --refresh-url=http://testserver/api/opencode/containers/oc-123/upload-target --project ."
+        "--token=-token-starting-with-dash --project ."
     )
 
 
@@ -310,37 +275,6 @@ def test_container_manager_refuses_to_delete_unmanaged_container() -> None:
         raise AssertionError("unmanaged containers must not be deleted")
 
     manager._docker.assert_called_once()
-
-
-def test_container_manager_connect_capability_is_scoped_and_released_after_disconnect() -> None:
-    manager = ContainerManager(Settings())
-    manager._docker = Mock(return_value=CompletedProcess([], 0, "container-connect-token\n", ""))
-
-    session = manager.open_tui("oc-target", "container-connect-token")
-    try:
-        try:
-            manager.open_tui("oc-target", "container-connect-token")
-        except RuntimeError:
-            pass
-        else:
-            raise AssertionError("only one TUI session may control a container")
-    finally:
-        manager.close_tui(session)
-
-    reconnected = manager.open_tui("oc-target", "container-connect-token")
-    manager.close_tui(reconnected)
-
-
-def test_container_manager_rejects_connect_capability_from_another_container() -> None:
-    manager = ContainerManager(Settings())
-    manager._docker = Mock(return_value=CompletedProcess([], 0, "other-container-token\n", ""))
-
-    try:
-        manager.open_tui("oc-target", "wrong-token")
-    except PermissionError:
-        pass
-    else:
-        raise AssertionError("another container's capability must not authorize a TUI session")
 
 
 def test_tunnel_recovery_waits_for_consecutive_probe_failures_and_reuses_container() -> None:
@@ -494,6 +428,8 @@ def test_create_then_immediate_list_keeps_initialized_tunnel_healthy() -> None:
     assert listed.status_code == 200
     assert listed.json() == [{
         "id": "new-container", "status": "healthy", "url": "https://new.trycloudflare.com",
+        "upload_url": "https://new.trycloudflare.com/upload",
+        "connect_url": "wss://new.trycloudflare.com/connect",
     }]
     assert manager._healthy.call_count == 1
 
@@ -669,16 +605,17 @@ def test_list_opencode_containers_returns_current_status_and_tunnel_url() -> Non
     response = client.get("/api/opencode/containers", headers={"Authorization": "Bearer admin-secret"})
 
     assert response.status_code == 200
-    assert response.json() == [
-        {"id": "oc-123", "status": "healthy", "url": "https://quiet-fox.trycloudflare.com"}
-    ]
+    assert response.json() == [{
+        "id": "oc-123", "status": "healthy", "url": "https://quiet-fox.trycloudflare.com",
+        "upload_url": "https://quiet-fox.trycloudflare.com/upload",
+        "connect_url": "wss://quiet-fox.trycloudflare.com/connect",
+    }]
+    assert "upload_token" not in response.text and "connect_token" not in response.text
 
 
 def test_get_opencode_container_returns_current_status_and_tunnel_url() -> None:
     manager = Mock(spec=ContainerManager)
-    manager.get.return_value = {
-        "id": "oc-123", "status": "unhealthy", "url": "https://new-fox.trycloudflare.com"
-    }
+    manager.get.return_value = {"id": "oc-123", "status": "unhealthy", "url": "https://new-fox.trycloudflare.com"}
     app.state.container_manager = manager
     app.state.settings = Settings(opencode_password="shared-secret", opencode_admin_token="admin-secret")
 
@@ -688,8 +625,11 @@ def test_get_opencode_container_returns_current_status_and_tunnel_url() -> None:
 
     assert response.status_code == 200
     assert response.json() == {
-        "id": "oc-123", "status": "unhealthy", "url": "https://new-fox.trycloudflare.com"
+        "id": "oc-123", "status": "unhealthy", "url": "https://new-fox.trycloudflare.com",
+        "upload_url": "https://new-fox.trycloudflare.com/upload",
+        "connect_url": "wss://new-fox.trycloudflare.com/connect",
     }
+    assert "upload_token" not in response.text and "connect_token" not in response.text
 
 
 def test_get_opencode_container_returns_not_found_for_unknown_id() -> None:

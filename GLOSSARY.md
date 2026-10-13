@@ -10,8 +10,11 @@ _Avoid_: 工作容器、沙箱（除非明確指安全隔離機制）
 **Tunnel**：將外部網路請求轉送至 OpenCode 容器內服務的 Cloudflare 連線。
 _Avoid_: 通道、代理（作為 Tunnel 的同義詞）
 
-**Tunnel URL**：Cloudflare 為 Tunnel 提供、可由外部連線至 OpenCode 服務的網址。
+**Tunnel URL**：Cloudflare 為 Tunnel 提供、可由外部連線至容器 Tunnel ingress 的網址。
 _Avoid_: 容器網址（容器本身沒有對外 URL）
+
+**Tunnel ingress**：容器接收 Tunnel 請求並將請求導向 OpenCode 服務、專案上傳或 TUI 工作階段的入口。
+_Avoid_: 管理 API（管理 API 留在內網，不經 Tunnel 對外提供）
 
 **容器健康狀態**：OpenCode 服務與其 Tunnel URL 是否可正常提供連線的狀態。
 _Avoid_: 容器存活狀態（只代表容器程序存在，未必代表服務可用）
