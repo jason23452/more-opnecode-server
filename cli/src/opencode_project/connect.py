@@ -56,7 +56,10 @@ def _terminal_input() -> bytes:
     global _PENDING_WINDOWS_KEY_PREFIX
     if msvcrt and sys.stdin.isatty():
         data = bytearray()
-        special_keys = {"H": b"\x1b[A", "P": b"\x1b[B", "M": b"\x1b[C", "K": b"\x1b[D"}
+        special_keys = {
+            "H": b"\x1b[A", "P": b"\x1b[B", "M": b"\x1b[C", "K": b"\x1b[D",
+            "C": b"\x07",  # F9 clipboard-paste fallback
+        }
         if _PENDING_WINDOWS_KEY_PREFIX:
             if not msvcrt.kbhit():
                 return b""
@@ -79,7 +82,9 @@ def _terminal_input() -> bytes:
         # responses back to the remote TUI as if the user had typed them.
         return _TERMINAL_QUERY_REPLIES.sub(b"", bytes(data))
     readable, _, _ = select.select([sys.stdin], [], [], 0.05)
-    return sys.stdin.buffer.read1(4096) if readable else b""
+    if not readable:
+        return b""
+    return sys.stdin.buffer.read1(4096).replace(b"\x1b[20~", b"\x07")
 
 
 def terminal_size() -> tuple[int, int]:

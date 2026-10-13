@@ -56,4 +56,4 @@ TUI WebSocket 只連至指定容器 Tunnel。若 URL 過期或網路連線失敗
 
 遠端 TUI 的程序執行在容器內，無法直接讀取本機剪貼簿。從檔案總管、Finder 或檔案管理器複製一般檔案/圖片後，在 TUI 貼上，CLI 會讀取本機剪貼簿並透過已授權的 TUI WebSocket 傳送檔案，接著將 `@clipboard-...` 參照貼入目前 prompt。多個已複製檔案會一併傳送；檔案會以 `clipboard-` 前綴保存在容器專案目錄，方便 OpenCode 的 `@` 檔案搜尋找到。
 
-一般貼上使用 `Ctrl+V`；若 Windows Terminal 攔截該快捷鍵，可在複製檔案後按 `Ctrl+G` 觸發貼上。剪貼簿讀取支援 Windows、macOS 與 Linux Wayland/X11；Linux 需安裝 `wl-paste` 或 `xclip`。每個檔案上限 25 MiB，每次最多 16 個檔案，總量上限 100 MiB。
+一般貼上使用 `Ctrl+V`；若終端攔截該快捷鍵，可在複製檔案後按 `F9`（或 `Ctrl+G`）觸發貼上。剪貼簿讀取支援 Windows、macOS 與 Linux Wayland/X11；Linux 需安裝 `wl-paste` 或 `xclip`。每個檔案上限 25 MiB，每次最多 16 個檔案，總量上限 100 MiB。

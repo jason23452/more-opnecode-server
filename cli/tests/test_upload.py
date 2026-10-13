@@ -222,6 +222,36 @@ class UploadTests(unittest.TestCase):
                     self.assertEqual(connect._terminal_input(), b"")
                     self.assertEqual(connect._terminal_input(), expected)
 
+    def test_windows_f9_scan_code_triggers_clipboard_paste(self):
+        import opencode_project.connect as connect
+
+        class FakeMsvcrt:
+            def __init__(self):
+                self.characters = ["\xe0", "C"]
+                self.availability = iter([True, True, False])
+
+            def kbhit(self):
+                return next(self.availability, False)
+
+            def getwch(self):
+                return self.characters.pop(0)
+
+        fake_stdin = unittest.mock.MagicMock()
+        fake_stdin.isatty.return_value = True
+        with patch.object(connect, "msvcrt", FakeMsvcrt()), \
+                patch.object(connect.sys, "stdin", fake_stdin):
+            self.assertEqual(connect._terminal_input(), b"\x07")
+
+    def test_posix_f9_sequence_triggers_clipboard_paste(self):
+        import opencode_project.connect as connect
+
+        fake_stdin = unittest.mock.MagicMock()
+        fake_stdin.buffer.read1.return_value = b"\x1b[20~"
+        with patch.object(connect, "msvcrt", None), \
+                patch.object(connect.sys, "stdin", fake_stdin), \
+                patch.object(connect.select, "select", return_value=([fake_stdin], [], [])):
+            self.assertEqual(connect._terminal_input(), b"\x07")
+
     def test_connect_sends_clipboard_file_as_attachment_frame_instead_of_ctrl_v(self):
         import opencode_project.connect as connect
         from types import SimpleNamespace
