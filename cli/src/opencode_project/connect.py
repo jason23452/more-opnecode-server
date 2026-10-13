@@ -22,6 +22,10 @@ except ImportError:  # pragma: no cover - exercised on POSIX
 from websockets.sync.client import connect as websocket_connect
 from websockets.exceptions import ConnectionClosed
 
+from .clipboard import read_clipboard_files
+
+_CLIPBOARD_FILE_PREFIX = b"\x00OPENCODE_CLIPBOARD_FILE_V1\x00"
+_CLIPBOARD_PASTE_TRIGGERS = {b"\x16", b"\x07"}  # Ctrl+V, Ctrl+G fallback
 _TERMINAL_QUERY_REPLIES = re.compile(
     rb"\x1b\[\?[0-9;]+\$y|"       # DEC private-mode report
     rb"\x1b\[[0-9]+;[0-9]+R|"      # cursor-position report
@@ -87,6 +91,30 @@ def terminal_size() -> tuple[int, int]:
     return max(1, size.columns), max(1, size.lines)
 
 
+def _send_terminal_input(remote, data: bytes) -> None:
+    pending = bytearray()
+    for value in data:
+        character = bytes((value,))
+        if character not in _CLIPBOARD_PASTE_TRIGGERS:
+            pending.extend(character)
+            continue
+        if pending:
+            remote.send(bytes(pending))
+            pending.clear()
+        files = read_clipboard_files()
+        if files:
+            for item in files:
+                metadata = json.dumps(
+                    {"name": item.name, "mime_type": item.mime_type},
+                    ensure_ascii=False, separators=(",", ":"),
+                ).encode("utf-8")
+                remote.send(_CLIPBOARD_FILE_PREFIX + metadata + b"\x00" + item.data)
+        else:
+            remote.send(character)
+    if pending:
+        remote.send(bytes(pending))
+
+
 def connect_terminal(url: str, token: str) -> None:
     global _PENDING_WINDOWS_KEY_PREFIX
     _PENDING_WINDOWS_KEY_PREFIX = False
@@ -111,7 +139,7 @@ def connect_terminal(url: str, token: str) -> None:
                     last_size = size
                 data = _terminal_input()
                 if data:
-                    remote.send(data)
+                    _send_terminal_input(remote, data)
                     if b"\x03" in data:
                         return
                 try:

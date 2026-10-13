@@ -222,6 +222,30 @@ class UploadTests(unittest.TestCase):
                     self.assertEqual(connect._terminal_input(), b"")
                     self.assertEqual(connect._terminal_input(), expected)
 
+    def test_connect_sends_clipboard_file_as_attachment_frame_instead_of_ctrl_v(self):
+        import opencode_project.connect as connect
+        from types import SimpleNamespace
+
+        clipboard_file = SimpleNamespace(
+            name="clipboard.png", mime_type="image/png", data=b"\x89PNG\r\n\x1a\nimage-data",
+        )
+        remote = unittest.mock.MagicMock()
+        remote.__enter__.return_value = remote
+        remote.recv.side_effect = KeyboardInterrupt()
+        with patch.object(connect, "terminal_size", return_value=(80, 24)), \
+                patch.object(connect, "_terminal_input", return_value=b"\x16"), \
+                patch.object(connect, "read_clipboard_files", return_value=[clipboard_file]), \
+                patch.object(connect, "websocket_connect", return_value=remote):
+            connect.connect_terminal("ws://tunnel.example/connect", "scoped-token")
+
+        file_frame = (
+            b"\x00OPENCODE_CLIPBOARD_FILE_V1\x00"
+            + b'{"name":"clipboard.png","mime_type":"image/png"}\x00'
+            + clipboard_file.data
+        )
+        self.assertIn(unittest.mock.call(file_frame), remote.send.call_args_list)
+        self.assertNotIn(unittest.mock.call(b"\x16"), remote.send.call_args_list)
+
     def test_connect_reports_same_known_close_code_message_for_closed_and_failed_connections(self):
         from opencode_project.connect import connect_terminal
 
