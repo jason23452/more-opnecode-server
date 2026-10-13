@@ -18,7 +18,7 @@ class ContainerCreated(BaseModel):
     url: str
     upload_url: str
     upload_token: str
-    cli_install_command: str = "python -m pip install ./cli"
+    cli_install_command: str = "uv tool install ./cli"
     upload_command: str
 
 
@@ -58,7 +58,7 @@ def create_container(
             "opencode-project upload --url "
             + str(request.base_url).rstrip("/")
             + f"{request.app.state.settings.api_prefix}/opencode/containers/{result['id']}/upload"
-            + f" --token {result['upload_token']} --project ."
+            + f" --token={result['upload_token']} --project ."
         ),
     )
 

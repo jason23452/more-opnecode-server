@@ -111,6 +111,127 @@ def _assert_tunnel_no_longer_serves(url: str, password: str, timeout: float = 45
 
 
 @pytest.mark.skipif(os.getenv("OPENCODE_DOCKER_E2E") != "1", reason="requires Docker daemon and Cloudflare Quick Tunnel")
+def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
+    api_port = int(os.getenv("OPENCODE_E2E_API_PORT", "18081"))
+    admin_token = os.getenv("OPENCODE_ADMIN_TOKEN", "integration-admin-token")
+    password = os.getenv("OPENCODE_PASSWORD", "integration-opencode-password")
+    env = os.environ | {
+        "OPENCODE_ADMIN_TOKEN": admin_token,
+        "OPENCODE_PASSWORD": password,
+        "OPENCODE_IMAGE": f"dynamic-opencode-upload-e2e:{uuid.uuid4().hex[:8]}",
+        "OPENCODE_STARTUP_TIMEOUT": "300",
+    }
+    process = subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "src.App.Main:app", "--host", "127.0.0.1", "--port", str(api_port)],
+        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    base_url = f"http://127.0.0.1:{api_port}"
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    managed_ids: list[str] = []
+    try:
+        deadline = time.monotonic() + 30
+        last_failure = "backend did not start"
+        while time.monotonic() < deadline:
+            try:
+                health = httpx.get(base_url + "/api/health", timeout=1)
+                if health.status_code == 200:
+                    break
+                last_failure = f"health returned HTTP {health.status_code}: {health.text}"
+            except httpx.HTTPError as error:
+                last_failure = f"{type(error).__name__}: {error}"
+            time.sleep(0.25)
+        else:
+            pytest.fail(f"backend did not start within 30s: {last_failure}")
+
+        created = httpx.post(base_url + "/api/opencode/containers", headers=headers, timeout=360)
+        assert created.status_code == 201, f"create failed: HTTP {created.status_code}: {created.text}"
+        payload = created.json()
+        target_id = payload["id"]
+        managed_ids.append(target_id)
+        second_created = httpx.post(base_url + "/api/opencode/containers", headers=headers, timeout=360)
+        assert second_created.status_code == 201, f"second create failed: HTTP {second_created.status_code}: {second_created.text}"
+        second_id = second_created.json()["id"]
+        managed_ids.append(second_id)
+        assert target_id != second_id, f"API returned duplicate container ids: {target_id}"
+
+        with tempfile.TemporaryDirectory(prefix="opencode-upload-e2e-") as project:
+            marker = f"uploaded-{uuid.uuid4().hex}"
+            marker_path = os.path.join(project, "upload-marker.txt")
+            with open(marker_path, "w", encoding="utf-8") as source:
+                source.write(marker)
+            cli_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../cli"))
+            installation = subprocess.run(
+                ["uv", "tool", "install", "--python", sys.executable, "--quiet", cli_root],
+                capture_output=True, text=True,
+            )
+            assert installation.returncode == 0, (
+                f"uv tool install failed (exit {installation.returncode}):\n"
+                f"stdout:\n{installation.stdout}\nstderr:\n{installation.stderr}"
+            )
+            tool_bin = subprocess.run(["uv", "tool", "dir", "--bin"], capture_output=True, text=True)
+            assert tool_bin.returncode == 0, (
+                f"uv tool dir --bin failed: stdout={tool_bin.stdout!r}, stderr={tool_bin.stderr!r}"
+            )
+            cli_executable = os.path.join(tool_bin.stdout.strip(), "opencode-project")
+            executable = subprocess.run(
+                [cli_executable, "upload",
+                 "--url", payload["upload_url"], f"--token={payload['upload_token']}", "--project", project],
+                capture_output=True, text=True, timeout=360,
+            )
+            assert executable.returncode == 0, (
+                f"CLI upload failed (exit {executable.returncode}):\n"
+                f"stdout:\n{executable.stdout}\nstderr:\n{executable.stderr}\n"
+                f"upload_url={payload['upload_url']!r}, target={target_id!r}"
+            )
+
+        uploaded = subprocess.run(
+            ["docker", "exec", target_id, "cat", "/workspace/project/upload-marker.txt"],
+            capture_output=True, text=True,
+        )
+        assert uploaded.returncode == 0 and uploaded.stdout == marker, (
+            f"target container did not contain uploaded marker {marker!r}: "
+            f"exit={uploaded.returncode}, stdout={uploaded.stdout!r}, stderr={uploaded.stderr!r}"
+        )
+        absent = subprocess.run(
+            ["docker", "exec", second_id, "test", "!", "-e", "/workspace/project/upload-marker.txt"],
+            capture_output=True, text=True,
+        )
+        assert absent.returncode == 0, (
+            f"uploaded marker leaked into second container {second_id}: "
+            f"stdout={absent.stdout!r}, stderr={absent.stderr!r}"
+        )
+
+        deleted = httpx.delete(base_url + f"/api/opencode/containers/{target_id}", headers=headers, timeout=30)
+        assert deleted.status_code == 204, f"delete failed: HTTP {deleted.status_code}: {deleted.text}"
+        managed_ids.remove(target_id)
+        inspect = subprocess.run(["docker", "inspect", target_id], capture_output=True, text=True)
+        assert inspect.returncode != 0, (
+            f"deleted container {target_id} still exists: stdout={inspect.stdout!r}, stderr={inspect.stderr!r}"
+        )
+        second_check = subprocess.run(
+            ["docker", "exec", second_id, "test", "!", "-e", "/workspace/project/upload-marker.txt"],
+            capture_output=True, text=True,
+        )
+        assert second_check.returncode == 0, (
+            f"second container changed after target deletion: stderr={second_check.stderr!r}"
+        )
+    finally:
+        for container_id in managed_ids:
+            try:
+                response = httpx.delete(base_url + f"/api/opencode/containers/{container_id}", headers=headers, timeout=30)
+                if response.status_code not in (204, 404):
+                    subprocess.run(["docker", "rm", "-f", container_id], check=False, capture_output=True)
+            except httpx.HTTPError:
+                subprocess.run(["docker", "rm", "-f", container_id], check=False, capture_output=True)
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=10)
+
+
+@pytest.mark.skipif(os.getenv("OPENCODE_DOCKER_E2E") != "1", reason="requires Docker daemon and Cloudflare Quick Tunnel")
 def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
     api_port = int(os.getenv("OPENCODE_E2E_API_PORT", "18080"))
     admin_token = os.getenv("OPENCODE_ADMIN_TOKEN", "integration-admin-token")
