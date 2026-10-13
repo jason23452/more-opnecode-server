@@ -71,7 +71,7 @@ def connect_terminal(url: str, token: str) -> None:
     try:
         with websocket_connect(
             url, additional_headers={"Authorization": f"Bearer {token}"},
-            max_size=None, ping_interval=20,
+            max_size=None, ping_interval=20, close_timeout=2,
         ) as remote:
             last_size = None
             while True:

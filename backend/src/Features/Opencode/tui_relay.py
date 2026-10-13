@@ -36,6 +36,7 @@ def relay(connection: ServerConnection) -> None:
     process = None
     resize_write = None
     try:
+        os.makedirs("/workspace/project", exist_ok=True)
         resize_read, resize_write = os.pipe()
         process = subprocess.Popen(
             ["python3", "/usr/local/bin/opencode-pty-runner", "sh", "-lc",

@@ -126,7 +126,7 @@ class UploadTests(unittest.TestCase):
             connect_terminal("ws://api/connect", "scoped-token")
         connector.assert_called_once_with(
             "ws://api/connect", additional_headers={"Authorization": "Bearer scoped-token"},
-            max_size=None, ping_interval=20,
+            max_size=None, ping_interval=20, close_timeout=2,
         )
         self.assertEqual(remote.recv.call_count, 2)
 
