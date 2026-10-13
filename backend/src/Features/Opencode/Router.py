@@ -2,9 +2,7 @@ import asyncio
 import hmac
 import logging
 import os
-import pty
 import select
-import signal
 import subprocess
 
 from fastapi.security.utils import get_authorization_scheme_param
@@ -13,6 +11,8 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, WebSocket, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
+
+from .DockerCli import docker_command
 
 router = APIRouter(prefix="/opencode/containers", tags=["OpenCode containers"])
 logger = logging.getLogger(__name__)
@@ -93,33 +93,32 @@ async def connect_tui(websocket: WebSocket, container_id: str) -> None:
     try:
         session = manager.open_tui(container_id, token)
     except PermissionError:
+        await websocket.accept()
         await websocket.close(code=4401, reason="連線授權無效，請使用建立容器時提供的連線資訊")
         return
     except LookupError:
+        await websocket.accept()
         await websocket.close(code=4404, reason="找不到此 OpenCode 容器")
         return
     except RuntimeError:
+        await websocket.accept()
         await websocket.close(code=4409, reason="此容器已有 TUI 工作階段，請稍後重試")
         return
 
     process = None
-    master_fd = slave_fd = None
+    output_stream = None
     try:
         await websocket.accept()
-        master_fd, slave_fd = pty.openpty()
         process = subprocess.Popen(
-            ["docker", "exec", "-it", container_id, "sh", "-lc", "cd /workspace/project && exec opencode ."],
-            stdin=slave_fd, stdout=slave_fd, stderr=slave_fd, start_new_session=True,
+            docker_command("exec", "-i", container_id, "python3", "/usr/local/bin/opencode-pty-runner",
+                           "sh", "-lc", "cd /workspace/project && exec opencode ."),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         )
-        os.close(slave_fd)
-        slave_fd = None
+        output_stream = process.stdout
         while process.poll() is None:
-            readable, _, _ = select.select([master_fd], [], [], 0.02)
+            readable, _, _ = select.select([output_stream], [], [], 0.02)
             if readable:
-                try:
-                    output = os.read(master_fd, 65536)
-                except OSError:
-                    break
+                output = os.read(output_stream.fileno(), 65536)
                 if output:
                     await websocket.send_bytes(output)
             try:
@@ -130,29 +129,23 @@ async def connect_tui(websocket: WebSocket, container_id: str) -> None:
                 break
             data = message.get("bytes")
             if data:
-                os.write(master_fd, data)
+                process.stdin.write(data)
+                process.stdin.flush()
             elif message.get("text") == "\x04":
                 break
     except Exception:
         logger.info("Remote TUI session disconnected for %s", container_id)
     finally:
-        if slave_fd is not None:
-            os.close(slave_fd)
         if process and process.poll() is None:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+            if process.stdin:
+                process.stdin.close()
             try:
                 process.wait(timeout=2)
             except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                process.kill()
                 process.wait()
-        if master_fd is not None:
-            os.close(master_fd)
+        if output_stream is not None:
+            output_stream.close()
         manager.close_tui(session)
 
 

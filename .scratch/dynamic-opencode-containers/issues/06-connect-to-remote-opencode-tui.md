@@ -4,11 +4,11 @@
 
 **Blocked by:** 05: 透過本機 CLI 上傳專案資料夾至容器.
 
-**Status:** ready-for-human
+**Status:** resolved
 
-- [ ] 建立 API 回應提供該容器專屬的 CLI 連線指令與授權資訊；連線不要求使用者在本機持有 Docker 權限或 OpenCode 管理密碼。
-- [ ] 本機 CLI 可連入遠端容器中的 OpenCode TUI，並保留既有 OpenCode server 與 Tunnel 能力。
-- [ ] 同一容器同時僅允許一個互動式 TUI 工作階段；其他連線會收到可理解的拒絕或忙碌回饋。
-- [ ] CLI 提供獨立的連線操作，以及先上傳指定專案資料夾再連線的一鍵操作。
-- [ ] 終端連線中斷時可辨識連線狀態並支援重新連線；驗證連線失敗及重新連線行為。
-- [ ] 以本機 CLI、後端連線通道與實際容器驗證 TUI 互動、單一工作階段限制及一鍵上傳連線流程。待確認：指定 E2E 可建立容器並觀察到候選 TUI 輸出，但第二連線未收到「已有 TUI 工作階段」；`opencode-project connect` 以一般連線中斷訊息退出，stderr 包含 `cannot attach stdin to a TTY-enabled container because stdin is not a terminal`。需釐清首個遠端 TUI 為何結束／忙碌拒絕未生效後重跑此檢查。
+- [x] 建立 API 回應提供該容器專屬的 CLI 連線指令與授權資訊；連線不要求使用者在本機持有 Docker 權限或 OpenCode 管理密碼。
+- [x] 本機 CLI 可連入遠端容器中的 OpenCode TUI，並保留既有 OpenCode server 與 Tunnel 能力。
+- [x] 同一容器同時僅允許一個互動式 TUI 工作階段；其他連線會收到可理解的拒絕或忙碌回饋。
+- [x] CLI 提供獨立的連線操作，以及先上傳指定專案資料夾再連線的一鍵操作。
+- [x] 終端連線中斷時可辨識連線狀態並支援重新連線；驗證連線失敗及重新連線行為。
+- [x] 以本機 CLI、後端連線通道與實際容器驗證 TUI 互動、單一工作階段限制及一鍵上傳連線流程。使用 WSL 自動偵測的原生 `docker.exe`（無 wrapper/shim，未啟用 WSL Integration），E2E 確認 TUI 可見輸出、容器已收到上傳檔案、第二 session 回報忙碌，並在 Ctrl-C 中斷後成功重新連線。
