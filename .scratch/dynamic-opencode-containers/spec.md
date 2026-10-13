@@ -12,7 +12,7 @@ Status: ready-for-agent
 
 後端持續透過 Tunnel URL 健康探測 OpenCode 服務，必要時自動重建 Tunnel 並更新 URL。若復原失敗，保留容器並回報故障狀態。部署設定提供 OpenCode 共用密碼與資源/監控限制。驗證以實際 Docker、後端 API、Cloudflare Quick Tunnel 及外部 HTTP 探測進行黑箱整合測試。
 
-建立容器後，API 另提供該容器專屬的 CLI 上傳與連線資訊。使用者在本機執行獨立安裝的專案 CLI，將指定資料夾直接經該容器的 Cloudflare Tunnel 傳入容器工作目錄，並透過本機終端連入該容器的 OpenCode TUI；管理者以多次單容器 API 呼叫建立多台互相隔離的 OpenCode 執行環境。管理後端負責容器生命週期與上傳控制資訊，不接收或轉送專案檔案內容。
+建立容器後，內網管理 API 提供該容器專屬的 CLI 上傳與連線資訊。使用者在本機執行獨立安裝的專案 CLI，將指定資料夾直接經該容器的 Cloudflare Tunnel 傳入容器工作目錄，並透過本機終端經同一 Tunnel 連入容器內的 OpenCode TUI；CLI 的上傳與 TUI 連線不呼叫管理後端，也不需要連線至 `localhost:8000`。管理者以多次單容器 API 呼叫建立多台互相隔離的 OpenCode 執行環境。管理後端只負責容器生命週期及管理資訊，不轉送專案檔案或 TUI 終端資料。
 
 ## User Stories
 
@@ -50,12 +50,13 @@ Status: ready-for-agent
 32. As an OpenCode 使用者, I want 每台容器取得互相隔離的專案副本, so that 多台遠端 OpenCode 可各自執行工作而不共用工作目錄。
 33. As an OpenCode 使用者, I want 每個容器同時只允許一個互動式 TUI 連線, so that 多個終端不會同時控制同一個互動工作階段。
 34. As an OpenCode 使用者, I want 專案檔案由本機 CLI 直接經容器 Tunnel 傳送, so that 大型檔案資料不必經管理後端中繼。
-35. As an OpenCode 使用者, I want 上傳期間 Tunnel URL 改變時 CLI 能取得最新上傳目標並重試, so that Tunnel 自動復原不會中斷專案上傳。
-36. As an OpenCode 使用者, I want 大型專案分塊傳送並在所有區塊驗證完成後才更新工作目錄, so that Tunnel 單次請求大小限制不會阻止上傳或造成半套專案。
+35. As an OpenCode 使用者, I want 專案上傳與 TUI 連線都只使用容器 Tunnel, so that 本機 CLI 不需要連線至管理後端。
+36. As an 內部管理者, I want Tunnel URL 改變後可透過內網管理 API 取得最新 upload/connect URL, so that 我能重新提供有效的 CLI 命令。
+37. As an OpenCode 使用者, I want 大型專案分塊傳送並在所有區塊驗證完成後才更新工作目錄, so that Tunnel 單次請求大小限制不會阻止上傳或造成半套專案。
 
 ## Implementation Decisions
 
-- 採用單一領域功能管理 OpenCode 容器及其 Tunnel 生命週期；API 需支援建立、列出、單筆查詢與刪除。建立／管理 API 是控制面，不承載專案檔案資料。具體路徑、HTTP 方法及回應欄位由實作者依現有 FastAPI 慣例定義。
+- 採用單一領域功能管理 OpenCode 容器及其 Tunnel 生命週期；API 需支援建立、列出、單筆查詢與刪除。管理 API 是內網控制面，不由 Tunnel 對外公開，也不承載專案檔案或 TUI 終端資料。具體路徑、HTTP 方法及回應欄位由實作者依現有 FastAPI 慣例定義。
 - 後端在部署所在主機的 Docker 建立固定規格的 OpenCode 容器。容器包含 curl、Python、uv、Node.js、npm、pnpm、OpenCode SDK，以及執行 Tunnel 所需的 `cloudflared`。
 - 容器內的 Tunnel ingress 固定透過 `4096` port 對外提供；Ingress 將一般 OpenCode HTTP 請求轉送至 OpenCode server，並將專案上傳路徑轉送至容器內的上傳接收器。`cloudflared` 將 Cloudflare Quick Tunnel 轉送至此 ingress。
 - 建立 API 等待 OpenCode 服務與 Tunnel 通過健康檢查後才回覆成功。初始化逾時、時間上限與其他監控門檻均應可由部署設定調整；具體預設值由實作階段決定。失敗時清理未就緒的容器與其暫存工作資料。
@@ -70,10 +71,10 @@ Status: ready-for-agent
 - CLI 以 GitHub Releases 預建獨立執行檔發佈；支援 Windows x64、macOS Intel/Apple Silicon 與 Linux x64。容器建立回應提供 PowerShell、macOS、Linux 各自的下載安裝命令；使用者不需安裝 Python、uv 或 Node.js。
 - 專案檔案資料由本機 CLI 直接透過該容器的 Cloudflare Tunnel 傳至容器內上傳接收器；FastAPI 管理後端不接收、不緩衝、不轉送專案 payload。每個容器擁有隔離的專案副本；不進行本機與遠端的持續雙向同步，也不建立 Git worktree/branch 流程。
 - 容器上傳接收器以容器專屬 upload token 驗證 CLI，只能寫入該容器的專案工作目錄。上傳採分塊傳輸；未收到並驗證完整專案前保留既有工作目錄，完成後才以安全的 staging/atomic replacement 更新。重送相同區塊需可安全重試。
-- Tunnel URL 可能在建立後或傳輸期間改變。CLI 可使用容器專屬 upload token 向後端控制 API 取得最新 Tunnel upload URL；此控制請求只交換連線資訊，檔案區塊仍直接傳至 Tunnel。上傳失敗時保留容器與舊專案，CLI 可刷新目標並重試。
+- Tunnel URL 可能在建立後或傳輸期間改變。管理者可透過內網管理 API 查詢最新 upload/connect URL，並以先前建立回應中的容器專屬 token 重新執行 CLI 命令；CLI 不呼叫管理後端刷新 URL。因 Quick Tunnel URL 會變動，不承諾使用者端自動取得新 URL。
 - 專案資料隨容器存續；移除容器時一併清除，不要求獨立持久化 Docker volume。CLI 只有在全部區塊完成且專案安裝成功後，才可連入該容器的 OpenCode TUI。
-- 本機 CLI 連入遠端容器中的互動式 OpenCode TUI；每個容器同時只允許一個互動式 TUI 工作階段。容器仍須符合既有 OpenCode server/Tunnel 管理需求。
-- 執行環境相容性：Docker Desktop 可在 Windows 上運行，而 WSL 可刻意不安裝 Linux Docker CLI 且不啟用 WSL Integration。後端在 WSL 中若偵測到 `docker.exe`，所有 Docker 呼叫（包含上傳及 WebSocket relay）須自動使用它；build 的 WSL 絕對路徑須轉成 Docker Desktop 可解析的 Windows 路徑。WebSocket relay 使用 `docker exec -i` pipes，並由容器內 Python PTY runner 為 OpenCode TUI 配置 controlling PTY，不把 WSL host PTY 傳給 `docker.exe exec -it`。原生 Linux 環境沿用 `docker`。
+- 本機 CLI 經 Tunnel ingress 連入容器內的互動式 OpenCode TUI；容器端 relay 配置 PTY，每個容器同時僅允許一個 TUI 工作階段。FastAPI 管理後端不執行 Docker exec 來中繼 TUI。
+- 執行環境相容性：Docker Desktop 可在 Windows 上運行，而 WSL 可刻意不安裝 Linux Docker CLI 且不啟用 WSL Integration。後端在 WSL 中若偵測到 `docker.exe`，所有管理 Docker 呼叫須自動使用它；build 的 WSL 絕對路徑須轉成 Docker Desktop 可解析的 Windows 路徑。Tunnel ingress 與容器內接收器處理 upload/TUI 資料流；原生 Linux 環境沿用 `docker`。
 - 以部署設定限制單一容器 CPU、記憶體及同時執行容器數量。
 - 遵循 ADR「使用 Docker OpenCode 容器與 Cloudflare Quick Tunnel」及 ADR「專案檔案經 Tunnel 直接上傳」：使用同主機 Docker、容器內 `cloudflared` 與臨時 Quick Tunnel；接受 URL 可因 Tunnel 重建而改變，並以健康監控及控制 API 查詢最新 upload URL 因應。
 - 主要測試 seam 為實際運作環境中的黑箱 HTTP 管理 API 與本機 CLI 可觀察的上傳/終端互動。測試需啟動真實後端及 Docker 環境，透過 API 建立實際容器與 Quick Tunnel，並從 Tunnel URL 驗證服務可達及管理生命週期。
@@ -84,8 +85,8 @@ Status: ready-for-agent
 - 主要驗收測試使用真實 Docker daemon、實際 OpenCode 容器與 Cloudflare Quick Tunnel：呼叫建立 API，使用配置的 OpenCode 密碼確認成功回應的 Tunnel URL 可透過外部 HTTP 連線至 OpenCode `4096` 服務；再呼叫列表、單筆查詢與刪除 API，確認狀態及資源清理結果。
 - 上傳驗收需驗證 CLI 可指定本機資料夾、套用預設排除規則，並確認專案 payload 直接通過目標容器 Tunnel ingress，而非送至管理後端。確認不同容器的專案副本互相隔離，且刪除容器會清除其工作資料。
 - 分塊上傳驗收需驗證區塊可重試、缺少/損壞區塊不會更新目前工作目錄，全部區塊驗證完成後才安裝專案；測試資料需超過單次 HTTP 請求大小限制。
-- Tunnel URL 變更驗收需在上傳期間使舊 URL 失效，確認 CLI 只向後端控制 API 取得新 URL，並將後續檔案區塊直接送至新 Tunnel，最終完成同一專案上傳。
-- 終端連線驗收需從本機 CLI 進入遠端 OpenCode TUI、確認上傳完成前不能開始互動、同一容器的第二個 TUI 連線受到限制，並驗證中斷後的連線處理行為。
+- Tunnel URL 變更驗收需使舊 URL 失效，確認管理者可透過內網管理 API 查詢新 upload/connect URL，並以原容器 token 手動重新執行 CLI；確認 CLI 未連線至管理 API，檔案區塊與 TUI 流量仍直接經 Tunnel。
+- 終端連線驗收需確認 CLI 使用 Tunnel URL 而非管理 API URL 進入遠端 OpenCode TUI；上傳完成前不能開始互動，同一容器第二個 TUI 連線受限，並驗證中斷後需手動取得新 URL 才能重新連線。
 - Tunnel 復原測試需在測試容器中使目前 Tunnel 失效，確認健康監控會重建 Tunnel、產生可用的新 URL、查詢 API 回傳新 URL，並確認 OpenCode 容器與工作狀態仍保留。多次復原失敗時，確認容器保留且 API 呈現故障狀態。
 - 驗證初始化逾時、資源數量上限、CPU/記憶體設定、未授權管理呼叫及刪除後暫存資料清除等外部行為。
 - 執行上述整合測試需有可用 Docker daemon、容器建置能力、外網連線及 Cloudflare Quick Tunnel 可用性；測試不得依賴固定 URL，應以每次建立或重建實際回傳的 URL 驗證。
@@ -99,6 +100,7 @@ Status: ready-for-agent
 - 使用者層級帳號、容器所有權隔離或面向公眾的容器管理 API。
 - URL 變更 webhook、推播或事件通知。
 - 停止後保留容器的暫停功能；刪除即完整清除容器、Tunnel 與工作資料。
+- 透過 Cloudflare Tunnel 對外提供內網管理 API；Tunnel 僅公開單一容器自己的 OpenCode、專案上傳與 TUI ingress。
 - 由管理後端代理或緩衝專案檔案 payload；僅由後端處理控制資訊與建立/管理容器。
 - 本機 OpenCode 執行、雙向即時檔案同步、跨容器共用工作目錄、Git worktree/branch 管理及自動合併。
 - 超過復原重試後自動刪除故障容器。
@@ -106,6 +108,7 @@ Status: ready-for-agent
 ## Further Notes
 
 - OpenCode SDK 的確切套件名稱/版本、OpenCode 服務啟動方式、API 路徑與 schema、管理 API 的具體驗證機制，以及資源與監控設定預設值尚未在對話中定義，應於實作設計時選定並記錄。
+- Tunnel URL 改變時，CLI 不透過 `localhost` 或其他管理 API 自動刷新；管理者需先從內網管理 API 取得新 URL，再以現有容器 token 重新執行 CLI 命令。
 - Tunnel 直接上傳仍受 Cloudflare Quick Tunnel 與容器 ingress 的單次請求大小限制；實作需以分塊傳輸避免單一請求超限，並提供清楚的區塊校驗與錯誤回報。
 - Cloudflare Quick Tunnel URL 可能在建立或復原時改變；呼叫端應以查詢 API 回傳的目前 Tunnel URL 為準。
 - 規格狀態為 `ready-for-agent`，依 issue tracker 慣例發布於本功能目錄。
