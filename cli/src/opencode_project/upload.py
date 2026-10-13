@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import hashlib
+import json
 import os
 import time
 import zipfile
@@ -13,6 +15,7 @@ EXCLUDED_DIRECTORIES = {
     ".next", ".nuxt", "dist", "build", "target", "coverage",
 }
 MAX_UPLOAD_BYTES = 95 * 1024 * 1024
+CHUNK_BYTES = 8 * 1024 * 1024
 
 
 def create_archive(project: Path) -> bytes:
@@ -46,12 +49,64 @@ def _send(url: str, token: str, archive: bytes) -> int:
         return response.status
 
 
-def upload_archive(url: str, token: str, archive: bytes, retries: int = 3) -> None:
+def _request(url: str, token: str, data: bytes | None = None, method: str = "GET", headers: dict[str, str] | None = None) -> bytes:
+    request = Request(url, data=data, headers={"Authorization": f"Bearer {token}", **(headers or {})}, method=method)
+    with urlopen(request, timeout=300) as response:
+        return response.read()
+
+
+def _refresh_target(refresh_url: str, token: str) -> str:
+    payload = json.loads(_request(refresh_url, token))
+    target = payload.get("upload_url")
+    if not isinstance(target, str) or not target.startswith(("https://", "http://")):
+        raise RuntimeError("Tunnel upload target refresh returned an invalid URL")
+    return target.removesuffix("/upload")
+
+
+def _retry_request(operation, retries: int, refresh_url: str | None, token: str, current_url: str) -> tuple[bytes, str]:
+    last_error: Exception | None = None
+    for attempt in range(max(1, retries)):
+        try:
+            return operation(current_url), current_url
+        except (OSError, URLError, HTTPError, RuntimeError, ValueError) as error:
+            last_error = error
+            if attempt + 1 >= retries:
+                break
+            if refresh_url:
+                try:
+                    current_url = _refresh_target(refresh_url, token)
+                except (OSError, URLError, HTTPError, ValueError, RuntimeError) as refresh_error:
+                    last_error = refresh_error
+            time.sleep(min(2 ** attempt, 8))
+    raise RuntimeError(f"上傳失敗，請再次執行相同命令重試：{last_error}") from last_error
+
+
+def upload_archive(url: str, token: str, archive: bytes, retries: int = 3, refresh_url: str | None = None) -> None:
+    if len(archive) > 2 * 1024**3:
+        raise ValueError("專案封裝檔超過 2 GiB 上限，請縮小專案後重試。")
     if len(archive) > MAX_UPLOAD_BYTES:
-        raise ValueError(
-            f"專案封裝檔超過單次上傳上限 95 MiB（目前 {len(archive) / 1024 / 1024:.1f} MiB）；"
-            "請縮小專案後重試。大型專案分塊傳輸將由後續版本支援。"
+        current_url = url.removesuffix("/upload")
+        metadata = json.dumps({"size": len(archive), "chunks": (len(archive) + CHUNK_BYTES - 1) // CHUNK_BYTES,
+                               "sha256": hashlib.sha256(archive).hexdigest()}).encode()
+        response, current_url = _retry_request(
+            lambda target: _request(target + "/upload/sessions", token, metadata, "POST", {"Content-Type": "application/json"}),
+            retries, refresh_url, token, current_url,
         )
+        session = json.loads(response)["session_id"]
+        for index, offset in enumerate(range(0, len(archive), CHUNK_BYTES)):
+            chunk = archive[offset:offset + CHUNK_BYTES]
+            digest = hashlib.sha256(chunk).hexdigest()
+            _, current_url = _retry_request(
+                lambda target, i=index, part=chunk, sha=digest: _request(
+                    f"{target}/upload/sessions/{session}/chunks/{i}", token, part, "PUT",
+                    {"Content-Type": "application/octet-stream", "X-Chunk-SHA256": sha}),
+                retries, refresh_url, token, current_url,
+            )
+        _retry_request(
+            lambda target: _request(target + f"/upload/sessions/{session}/finalize", token, b"", "POST"),
+            retries, refresh_url, token, current_url,
+        )
+        return
     last_error: Exception | None = None
     for attempt in range(max(1, retries)):
         try:

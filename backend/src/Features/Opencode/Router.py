@@ -25,6 +25,7 @@ class ContainerCreated(BaseModel):
     id: str
     url: str
     upload_url: str
+    upload_target_url: str
     upload_token: str
     cli_install_commands: dict[str, str]
     upload_command: str
@@ -86,10 +87,17 @@ def create_container(
             request.app.state.settings.opencode_cli_release_url
         ),
         upload_url=result["url"].rstrip("/") + "/upload",
+        upload_target_url=(
+            ("https" if request.url.scheme == "https" else "http") + "://" + request.url.netloc
+            + f"{request.app.state.settings.api_prefix}/opencode/containers/{result['id']}/upload-target"
+        ),
         upload_command=(
             "opencode-project upload --url "
             + result["url"].rstrip("/") + "/upload"
-            + f" --token={result['upload_token']} --project ."
+            + f" --token={result['upload_token']} --refresh-url="
+            + (("https" if request.url.scheme == "https" else "http") + "://" + request.url.netloc
+               + f"{request.app.state.settings.api_prefix}/opencode/containers/{result['id']}/upload-target")
+            + " --project ."
         ),
         connect_url=("ws" if request.url.scheme == "http" else "wss") + "://" + request.url.netloc
         + f"{request.app.state.settings.api_prefix}/opencode/containers/{result['id']}/connect",
@@ -101,6 +109,22 @@ def create_container(
             + f" --token={connect_token}"
         ),
     )
+
+
+@router.get("/{container_id}/upload-target")
+def get_upload_target(
+    container_id: str,
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> dict[str, str]:
+    token = credentials.credentials if credentials else ""
+    try:
+        target = request.app.state.container_manager.upload_target(container_id, token)
+    except PermissionError as error:
+        raise HTTPException(status_code=401, detail="Invalid container upload token") from error
+    if target is None:
+        raise HTTPException(status_code=404, detail="Container upload target not found")
+    return {"upload_url": target + "/upload"}
 
 
 @router.websocket("/{container_id}/connect")
