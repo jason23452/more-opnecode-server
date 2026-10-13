@@ -12,4 +12,5 @@
 - [x] OpenCode 服務使用部署設定的共用密碼；管理 API 受到內部管理者可用的憑證或網路邊界保護，且 API 不回傳 OpenCode 密碼。
 - [x] 初始化逾時或失敗時，API 回報失敗並清理未就緒容器及其暫存工作資料。
 - [x] CPU、記憶體、同時執行容器數量及初始化逾時可由部署設定限制；超出容器數量上限時不建立新容器。
+- [x] Cloudflare Quick Tunnel 建立回覆 429 或程序意外結束時，容器以可配置指數退避自動重試，建立 API 持續等待至 Tunnel 就緒或初始化逾時。
 - [x] 以真實 Docker、後端 API 及 Cloudflare Quick Tunnel 驗證建立流程，並使用配置密碼確認回傳的 URL 可連至 OpenCode `4096` 服務。

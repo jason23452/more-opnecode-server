@@ -2,11 +2,13 @@ import hmac
 import logging
 from typing import Literal
 
-from fastapi import APIRouter, Header, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/opencode/containers", tags=["OpenCode containers"])
 logger = logging.getLogger(__name__)
+bearer_scheme = HTTPBearer(auto_error=False)
 
 _SAFE_SERVICE_ERROR = "OpenCode 容器服務暫時無法使用"
 
@@ -22,9 +24,9 @@ class ContainerStatus(BaseModel):
     url: str
 
 
-def _authorize(request: Request, authorization: str | None) -> None:
+def _authorize(request: Request, credentials: HTTPAuthorizationCredentials | None) -> None:
     token = request.app.state.settings.opencode_admin_token
-    supplied = authorization.removeprefix("Bearer ") if authorization else ""
+    supplied = credentials.credentials if credentials else ""
     if not token or not hmac.compare_digest(supplied, token):
         raise HTTPException(status_code=401, detail="Management credentials required")
 
@@ -35,8 +37,11 @@ def _service_unavailable(message: str, *args: str) -> HTTPException:
 
 
 @router.post("", response_model=ContainerCreated, status_code=201)
-def create_container(request: Request, authorization: str | None = Header(default=None)) -> ContainerCreated:
-    _authorize(request, authorization)
+def create_container(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> ContainerCreated:
+    _authorize(request, credentials)
     try:
         result = request.app.state.container_manager.create()
     except Exception as error:
@@ -45,8 +50,11 @@ def create_container(request: Request, authorization: str | None = Header(defaul
 
 
 @router.get("", response_model=list[ContainerStatus])
-def list_containers(request: Request, authorization: str | None = Header(default=None)) -> list[ContainerStatus]:
-    _authorize(request, authorization)
+def list_containers(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> list[ContainerStatus]:
+    _authorize(request, credentials)
     try:
         return [ContainerStatus(**container) for container in request.app.state.container_manager.list()]
     except Exception as error:
@@ -55,9 +63,11 @@ def list_containers(request: Request, authorization: str | None = Header(default
 
 @router.get("/{container_id}", response_model=ContainerStatus)
 def get_container(
-    container_id: str, request: Request, authorization: str | None = Header(default=None)
+    container_id: str,
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> ContainerStatus:
-    _authorize(request, authorization)
+    _authorize(request, credentials)
     try:
         container = request.app.state.container_manager.get(container_id)
     except Exception as error:
@@ -71,9 +81,9 @@ def get_container(
 def delete_container(
     container_id: str,
     request: Request,
-    authorization: str | None = Header(default=None),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> Response:
-    _authorize(request, authorization)
+    _authorize(request, credentials)
     try:
         request.app.state.container_manager.delete(container_id)
     except LookupError as error:

@@ -42,6 +42,21 @@ def test_create_opencode_requires_internal_management_token() -> None:
     assert response.status_code == 401
 
 
+def test_opencode_management_docs_expose_bearer_authorization_scheme() -> None:
+    schema = app.openapi()
+    create_operation = schema["paths"]["/api/opencode/containers"]["post"]
+
+    assert create_operation["security"] == [{"HTTPBearer": []}]
+    assert schema["components"]["securitySchemes"]["HTTPBearer"] == {
+        "type": "http",
+        "scheme": "bearer",
+    }
+    assert all(
+        parameter["name"].lower() != "authorization"
+        for parameter in create_operation.get("parameters", [])
+    )
+
+
 def test_create_opencode_waits_for_ready_container_and_hides_password() -> None:
     manager = Mock(spec=ContainerManager)
     manager.create.return_value = {"id": "oc-123", "url": "https://quiet-fox.trycloudflare.com"}
@@ -182,6 +197,8 @@ def test_tunnel_recovery_waits_for_consecutive_probe_failures_and_reuses_contain
     assert "https://old.trycloudflare.com" in manager._wait_for_recovered_tunnel.call_args.args
     assert manager._wait_for_recovered_tunnel.call_args.args[0] == "oc-1"
     restart_command = manager._docker.call_args.args[4]
+    assert "pkill -x cloudflared" in restart_command
+    assert "cloudflared tunnel" not in restart_command
     assert "rm -f /tmp/opencode-tunnel-url" in restart_command
     assert ": >/tmp/cloudflared.log" in restart_command
     assert manager.get("oc-1")["url"] == "https://new.trycloudflare.com"
@@ -197,7 +214,7 @@ def test_failed_tunnel_retries_report_unhealthy_without_removing_container() -> 
 
     manager.monitor_once()
 
-    assert manager._docker.call_count == 2
+    assert manager._docker.call_count == 1
     assert all(call.args[0] == "exec" for call in manager._docker.call_args_list)
     assert manager._statuses["oc-1"] == "unhealthy"
     assert all("rm" not in call.args for call in manager._docker.call_args_list)
@@ -215,7 +232,7 @@ def test_tunnel_recovery_restarts_again_when_new_tunnel_never_becomes_ready(monk
     recovered = manager._recover_tunnel("oc-1", "https://old.trycloudflare.com")
 
     assert recovered == ""
-    assert manager._docker.call_count == 3
+    assert manager._docker.call_count == 1
     assert manager._wait_for_recovered_tunnel.call_count == 3
 
 

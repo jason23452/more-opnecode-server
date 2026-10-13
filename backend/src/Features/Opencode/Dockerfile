@@ -11,5 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
     curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${cloudflared_arch}" -o /usr/local/bin/cloudflared && \
     chmod +x /usr/local/bin/cloudflared && rm -rf /var/lib/apt/lists/*
 ENV PATH="/root/.local/bin:${PATH}"
+COPY tunnel-supervisor.sh /usr/local/bin/tunnel-supervisor.sh
+RUN chmod +x /usr/local/bin/tunnel-supervisor.sh
 EXPOSE 4096
-CMD ["sh", "-c", "opencode serve --hostname 0.0.0.0 --port 4096 & opencode_pid=$!; sleep 3; cloudflared tunnel --url http://127.0.0.1:4096 >/tmp/cloudflared.log 2>&1 & wait $opencode_pid"]
+CMD ["sh", "-c", "opencode serve --hostname 0.0.0.0 --port 4096 & opencode_pid=$!; sleep 3; /usr/local/bin/tunnel-supervisor.sh & tunnel_supervisor_pid=$!; wait $opencode_pid; server_status=$?; kill -TERM $tunnel_supervisor_pid 2>/dev/null || true; wait $tunnel_supervisor_pid 2>/dev/null || true; exit $server_status"]

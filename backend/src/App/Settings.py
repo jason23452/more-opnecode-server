@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     opencode_tunnel_failure_threshold: int = 3
     opencode_tunnel_recovery_attempts: int = 3
     opencode_tunnel_recovery_delay: float = 2.0
+    opencode_tunnel_retry_initial_delay: int = 5
+    opencode_tunnel_retry_max_delay: int = 60
 
     model_config = SettingsConfigDict(
         env_file=".env",

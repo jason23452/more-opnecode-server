@@ -4,10 +4,19 @@
 
 ## 環境需求
 
-- Python 3.10 以上
+- Python 3.12（版本由 `.python-version` 固定）
 - [uv](https://docs.astral.sh/uv/)
 
 ## 安裝與啟動
+
+若同一份工作目錄會在 Windows 與 WSL 間切換，請在 Windows PowerShell 使用獨立的 uv 環境路徑，避免兩種作業系統共用 `.venv`：
+
+```powershell
+$env:UV_PROJECT_ENVIRONMENT = "$env:LOCALAPPDATA\uv\more-opnecode-server-backend-win"
+uv python install 3.12
+uv sync --dev
+uv run uvicorn src.App.Main:app --reload --host 0.0.0.0 --port 8000
+```
 
 ```bash
 uv sync --dev
@@ -62,6 +71,8 @@ src/
 | `OPENCODE_TUNNEL_FAILURE_THRESHOLD` | `3` | 觸發 Tunnel 重建前的連續探測失敗次數 |
 | `OPENCODE_TUNNEL_RECOVERY_ATTEMPTS` | `3` | 每輪 Tunnel 重建嘗試次數 |
 | `OPENCODE_TUNNEL_RECOVERY_DELAY` | `2` | 重建失敗後的等待秒數 |
+| `OPENCODE_TUNNEL_RETRY_INITIAL_DELAY` | `5` | cloudflared 建立失敗（包含 Quick Tunnel 回覆 429）後首次重試等待秒數，採指數退避 |
+| `OPENCODE_TUNNEL_RETRY_MAX_DELAY` | `60` | cloudflared 指數退避的最長等待秒數 |
 
 範例：
 

@@ -7,6 +7,14 @@ def test_opencode_image_installs_process_management_tools() -> None:
     assert "procps" in dockerfile.read_text()
 
 
+def test_opencode_image_runs_cloudflared_under_retry_supervisor() -> None:
+    dockerfile = Path(__file__).parents[1] / "src/Features/Opencode/Dockerfile"
+    contents = dockerfile.read_text()
+
+    assert "COPY tunnel-supervisor.sh /usr/local/bin/tunnel-supervisor.sh" in contents
+    assert "/usr/local/bin/tunnel-supervisor.sh" in contents.split("CMD ", 1)[1]
+
+
 def test_opencode_image_selects_cloudflared_for_supported_target_architectures() -> None:
     dockerfile = Path(__file__).parents[1] / "src/Features/Opencode/Dockerfile"
     contents = dockerfile.read_text()

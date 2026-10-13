@@ -99,13 +99,14 @@ class ContainerManager:
                 self._statuses[container_id] = "unhealthy"
 
     def _recover_tunnel(self, container_id: str, old_url: str) -> str:
-        command = "pkill cloudflared || true; rm -f /tmp/opencode-tunnel-url; : >/tmp/cloudflared.log; cloudflared tunnel --url http://127.0.0.1:4096 >/tmp/cloudflared.log 2>&1 &"
+        command = "rm -f /tmp/opencode-tunnel-url; : >/tmp/cloudflared.log; pkill -x cloudflared || true"
+        restart = self._docker("exec", container_id, "sh", "-c", command, check=False)
+        if restart.returncode != 0:
+            return ""
         for attempt in range(max(1, self.settings.opencode_tunnel_recovery_attempts)):
-            result = self._docker("exec", container_id, "sh", "-c", command, check=False)
-            if result.returncode == 0:
-                recovered_url = self._wait_for_recovered_tunnel(container_id, old_url)
-                if recovered_url:
-                    return recovered_url
+            recovered_url = self._wait_for_recovered_tunnel(container_id, old_url)
+            if recovered_url:
+                return recovered_url
             if attempt + 1 < self.settings.opencode_tunnel_recovery_attempts:
                 time.sleep(self.settings.opencode_tunnel_recovery_delay)
         return ""
@@ -175,6 +176,8 @@ class ContainerManager:
                 "--cpus", str(self.settings.opencode_container_cpu),
                 "--memory", self.settings.opencode_container_memory,
                 "-e", f"OPENCODE_SERVER_PASSWORD={self.settings.opencode_password}",
+                "-e", f"OPENCODE_TUNNEL_RETRY_INITIAL_DELAY={self.settings.opencode_tunnel_retry_initial_delay}",
+                "-e", f"OPENCODE_TUNNEL_RETRY_MAX_DELAY={self.settings.opencode_tunnel_retry_max_delay}",
                 self.settings.opencode_image,
             ).stdout.strip()
             with self._lock:
