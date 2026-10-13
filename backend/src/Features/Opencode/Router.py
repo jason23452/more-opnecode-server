@@ -88,6 +88,7 @@ def create_container(
     except Exception as error:
         raise _service_unavailable("Failed to create OpenCode container") from error
     connect_token = result.pop("connect_token")
+    _, connect_url = _tunnel_targets(result["url"])
     return ContainerCreated(
         **result,
         cli_install_commands=_cli_install_commands(
@@ -99,13 +100,11 @@ def create_container(
             + result["url"].rstrip("/") + "/upload"
             + f" --token={result['upload_token']} --project ."
         ),
-        connect_url=("wss" if result["url"].startswith("https://") else "ws")
-        + "://" + result["url"].split("://", 1)[1].rstrip("/") + "/connect",
+        connect_url=connect_url,
         connect_token=connect_token,
         connect_command=(
             "opencode-project connect --url "
-            + (("wss" if result["url"].startswith("https://") else "ws") + "://"
-               + result["url"].split("://", 1)[1].rstrip("/") + "/connect")
+            + connect_url
             + f" --token={connect_token}"
         ),
     )

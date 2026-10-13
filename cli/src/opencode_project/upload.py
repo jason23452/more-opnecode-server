@@ -77,10 +77,14 @@ def _retry_request(operation, retries: int, current_url: str) -> bytes:
             if attempt + 1 >= retries:
                 break
             time.sleep(min(2 ** attempt, 8))
-    raise RuntimeError(
-        f"Tunnel 上傳失敗：{last_error}。請透過管理 API 重新查詢目前的 upload_url，"
+    raise RuntimeError(_upload_failure_message(last_error)) from last_error
+
+
+def _upload_failure_message(error: Exception | None) -> str:
+    return (
+        f"Tunnel 上傳失敗：{error}。請透過管理 API 重新查詢目前的 upload_url，"
         "並使用原容器 upload token 重新執行上傳命令。"
-    ) from last_error
+    )
 
 
 def upload_archive(url: str, token: str, archive: bytes | Path, retries: int = 3) -> None:
@@ -135,7 +139,4 @@ def upload_archive(url: str, token: str, archive: bytes | Path, retries: int = 3
             last_error = error
             if attempt + 1 < retries:
                 time.sleep(min(2 ** attempt, 8))
-    raise RuntimeError(
-        f"Tunnel 上傳失敗：{last_error}。請透過管理 API 重新查詢目前的 upload_url，"
-        "並使用原容器 upload token 重新執行上傳命令。"
-    ) from last_error
+    raise RuntimeError(_upload_failure_message(last_error)) from last_error
