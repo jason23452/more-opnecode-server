@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import hmac
 import hashlib
-import io
 import json
 import os
 import re
 import shutil
 import stat
+import ctypes
 import tempfile
 import threading
 import time
 import uuid
 import zipfile
+from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 
@@ -23,6 +24,25 @@ PROJECT = Path("/workspace/project")
 _INSTALL_LOCK = threading.Lock()
 _SESSION_LOCK = threading.RLock()
 CHUNK_BYTES = 8 * 1024 * 1024
+MAX_SINGLE_UPLOAD_BYTES = 95 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class UploadMetadata:
+    size: int
+    chunks: int
+    sha256: str
+
+
+def _exchange_directories(left: Path, right: Path) -> None:
+    """Atomically exchange two same-filesystem directory entries (Linux)."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = libc.renameat2
+    renameat2.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+    renameat2.restype = ctypes.c_int
+    if renameat2(-100, os.fsencode(left), -100, os.fsencode(right), 2) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
 SESSION_TTL_SECONDS = 24 * 60 * 60
 
 
@@ -46,17 +66,25 @@ class UploadSessions:
             except OSError:
                 continue
 
-    def create(self, size: int, chunks: int, digest: str) -> str:
+    def create(self, client_id: str, size: int, chunks: int, digest: str) -> str:
+        if not re.fullmatch(r"[0-9a-f]{32}", client_id):
+            raise ValueError("Invalid upload session ID")
         if size <= 0 or size > self.max_bytes or chunks <= 0 or chunks > 100_000:
             raise ValueError("Invalid upload size or chunk count")
         if not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise ValueError("Invalid archive digest")
         if chunks != (size + CHUNK_BYTES - 1) // CHUNK_BYTES:
             raise ValueError("Invalid chunk count for archive size")
-        session = uuid.uuid4().hex
+        metadata = UploadMetadata(size, chunks, digest)
+        session = client_id
         directory = self.root / session
-        directory.mkdir(mode=0o700)
-        (directory / "metadata.json").write_text(json.dumps({"size": size, "chunks": chunks, "digest": digest}))
+        with self.lock:
+            if directory.exists():
+                if json.loads((directory / "metadata.json").read_text()) != asdict(metadata):
+                    raise ValueError("Upload session metadata conflict")
+                return session
+            directory.mkdir(mode=0o700)
+            (directory / "metadata.json").write_text(json.dumps(asdict(metadata)))
         return session
 
     def _session(self, session: str) -> tuple[Path, dict]:
@@ -96,18 +124,23 @@ class UploadSessions:
                     for block in iter(lambda: chunk.read(1024 * 1024), b""):
                         digest.update(block)
                         total += len(block)
-            if total != metadata["size"] or digest.hexdigest() != metadata["digest"]:
+            if total != metadata["size"] or digest.hexdigest() != metadata["sha256"]:
                 raise ValueError("Archive size or digest mismatch")
-            data = b"".join(path.read_bytes() for path in paths)
-            install_archive(data, self.target, max_bytes=self.max_bytes)
+            with tempfile.TemporaryFile(dir=self.root) as archive_file:
+                for path in paths:
+                    with path.open("rb") as chunk:
+                        shutil.copyfileobj(chunk, archive_file, 1024 * 1024)
+                archive_file.flush()
+                install_archive(Path(f"/proc/self/fd/{archive_file.fileno()}"), self.target, max_bytes=self.max_bytes)
             shutil.rmtree(directory)
 
 
-def install_archive(data: bytes, target: Path, max_bytes: int = MAX_UPLOAD_BYTES) -> None:
-    if len(data) > max_bytes:
+def install_archive(data: bytes | Path, target: Path, max_bytes: int = MAX_UPLOAD_BYTES) -> None:
+    source_path = data if isinstance(data, Path) else None
+    if source_path is not None and source_path.stat().st_size > max_bytes or isinstance(data, bytes) and len(data) > max_bytes:
         raise ValueError(f"Project archive exceeds the single-request limit of {max_bytes} bytes")
     try:
-        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        with zipfile.ZipFile(source_path if source_path is not None else __import__("io").BytesIO(data)) as archive:
             entries = archive.infolist()
             if len(entries) > MAX_ENTRIES or sum(item.file_size for item in entries) > MAX_EXPANDED_BYTES:
                 raise ValueError("Project archive exceeds extraction limits")
@@ -135,17 +168,16 @@ def install_archive(data: bytes, target: Path, max_bytes: int = MAX_UPLOAD_BYTES
                         with archive.open(item) as source, destination.open("wb") as output:
                             shutil.copyfileobj(source, output)
                 if target.exists():
-                    backup = Path(tempfile.mkdtemp(prefix=".project-backup-", dir=parent))
-                    backup.rmdir()
-                    os.replace(target, backup)
-                try:
+                    _exchange_directories(staging, target)
+                    backup = staging
+                else:
                     os.replace(staging, target)
-                except Exception:
-                    if backup is not None and backup.exists() and not target.exists():
-                        os.replace(backup, target)
-                    raise
                 if backup is not None:
-                    shutil.rmtree(backup)
+                    try:
+                        shutil.rmtree(backup)
+                    except OSError:
+                        _exchange_directories(backup, target)
+                        raise
             finally:
                 if staging.exists():
                     shutil.rmtree(staging)
@@ -203,7 +235,7 @@ class UploadHandler(BaseHTTPRequestHandler):
                 return
             try:
                 payload = json.loads(data)
-                session = self.sessions.create(int(payload["size"]), int(payload["chunks"]), payload["sha256"])
+                session = self.sessions.create(payload["session_id"], int(payload["size"]), int(payload["chunks"]), payload["sha256"])
             except (ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
                 self.send_error(400, str(error))
                 return
@@ -245,7 +277,7 @@ class UploadHandler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "-1"))
         except ValueError:
             length = -1
-        limit = int(os.environ.get("OPENCODE_UPLOAD_MAX_BYTES", MAX_UPLOAD_BYTES))
+        limit = min(int(os.environ.get("OPENCODE_UPLOAD_MAX_BYTES", MAX_SINGLE_UPLOAD_BYTES)), MAX_SINGLE_UPLOAD_BYTES)
         if length < 0:
             self.send_error(411, "Content-Length is required")
             return

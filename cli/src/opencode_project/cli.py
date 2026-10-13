@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import contextlib
 from pathlib import Path
 
 from opencode_project.connect import connect_terminal
@@ -30,7 +31,12 @@ def main() -> None:
         if bool(args.connect_url) != bool(args.connect_token):
             raise ValueError("--connect-url 與 --connect-token 必須一起提供")
         archive = create_archive(args.project)
-        upload_archive(args.url, args.token, archive, retries=args.retries, refresh_url=args.refresh_url)
+        try:
+            upload_archive(args.url, args.token, archive, retries=args.retries, refresh_url=args.refresh_url)
+        finally:
+            if isinstance(archive, Path):
+                with contextlib.suppress(FileNotFoundError):
+                    archive.unlink()
     except (OSError, ValueError, RuntimeError) as error:
         print(str(error), file=sys.stderr)
         raise SystemExit(1) from error
