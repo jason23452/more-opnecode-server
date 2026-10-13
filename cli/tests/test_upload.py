@@ -72,7 +72,7 @@ class UploadTests(unittest.TestCase):
     def test_upload_help_does_not_offer_management_refresh_option(self):
         result = subprocess.run(
             [sys.executable, "-m", "opencode_project.cli", "upload", "--help"],
-            cwd=Path(__file__).parents[1], capture_output=True, text=True,
+            cwd=Path(__file__).parents[1], capture_output=True, text=True, encoding="utf-8",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("--refresh-url", result.stdout)
