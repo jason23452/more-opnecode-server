@@ -1,6 +1,7 @@
 """Opt-in black-box test requiring Docker and outbound Cloudflare access."""
 
 import os
+import base64
 import fcntl
 import pty
 import select
@@ -200,6 +201,7 @@ def test_standalone_tui_tunnel_connect_propagates_size_resize_and_reconnects() -
     base_url = f"http://127.0.0.1:{api_port}"
     headers = {"Authorization": f"Bearer {admin_token}"}
     container_id = None
+    clipboard_marker = f"/tmp/opencode-clipboard-e2e-{uuid.uuid4().hex}.marker"
     connections: list[tuple[subprocess.Popen, int, threading.Thread]] = []
     try:
         deadline = time.monotonic() + 30
@@ -228,10 +230,26 @@ def test_standalone_tui_tunnel_connect_propagates_size_resize_and_reconnects() -
         cli = ["uv", "run", "--quiet", "--project", cli_root, "opencode-project", "connect",
                "--url", payload["connect_url"], f"--token={payload['connect_token']}"]
 
-        def start_connection(columns: int, rows: int):
+        def start_connection(columns: int, rows: int, clipboard_image: bytes | None = None):
             master, slave = pty.openpty()
             fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
-            process = subprocess.Popen(cli, stdin=slave, stdout=slave, stderr=slave)
+            command = cli
+            child_env = None
+            if clipboard_image is not None:
+                script = (
+                    "from opencode_project.clipboard import ClipboardFile\n"
+                    "from pathlib import Path\n"
+                    "import opencode_project.connect as connect\n"
+                    f"connect.read_clipboard_files = lambda: (Path({clipboard_marker!r}).write_text('called'), "
+                    f"[ClipboardFile('e2e-image.png', 'image/png', {clipboard_image!r})])[1]\n"
+                    f"connect.connect_terminal({payload['connect_url']!r}, {payload['connect_token']!r})\n"
+                )
+                command = [sys.executable, "-c", script]
+                cli_source = os.path.join(cli_root, "src")
+                child_env = os.environ | {
+                    "PYTHONPATH": cli_source + os.pathsep + os.environ.get("PYTHONPATH", "")
+                }
+            process = subprocess.Popen(command, stdin=slave, stdout=slave, stderr=slave, env=child_env)
             os.close(slave)
             output, visible, reader = _start_terminal_output_reader(master, process)
             connections.append((process, master, reader))
@@ -274,10 +292,50 @@ def test_standalone_tui_tunnel_connect_propagates_size_resize_and_reconnects() -
         fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 44, 132, 0, 0))
         _pty_size_probe(container_id, 132, 44)
         assert process.poll() is None, "TUI connection exited while applying live terminal resize"
-
         os.write(master, b"\x03")
         process.wait(timeout=10)
         assert process.returncode == 0, f"Ctrl-C disconnect returned {process.returncode}: {bytes(output[-2000:])!r}"
+
+        clipboard_png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/c9sAAAAASUVORK5CYII="
+        )
+        image_process, image_master, image_output, image_visible = start_connection(132, 44, clipboard_png)
+        assert image_visible.wait(timeout=40), f"clipboard-image TUI connect failed: {bytes(image_output[-2000:])!r}"
+        os.write(image_master, b"\x07")
+        marker_deadline = time.monotonic() + 5
+        while time.monotonic() < marker_deadline and not os.path.exists(clipboard_marker):
+            time.sleep(0.05)
+        assert os.path.exists(clipboard_marker), (
+            f"CLI did not read clipboard on Ctrl+G; exit={image_process.poll()}, "
+            f"output={bytes(image_output[-1000:])!r}"
+        )
+        deadline = time.monotonic() + 10
+        stored_image = b""
+        while time.monotonic() < deadline:
+            saved = subprocess.run(
+                    docker_command(
+                        "exec", container_id, "sh", "-c",
+                        "for image in /workspace/project/clipboard-*-e2e-image.png; do "
+                    "test -f \"$image\" && cat \"$image\" && exit 0; done; exit 1",
+                ), capture_output=True,
+            )
+            if saved.returncode == 0:
+                stored_image = saved.stdout
+                break
+            time.sleep(0.1)
+        assert stored_image == clipboard_png, "clipboard image frame was not stored in the remote project"
+        reference_deadline = time.monotonic() + 5
+        while time.monotonic() < reference_deadline and b"e2e-image.png" not in image_output:
+            time.sleep(0.1)
+        assert b"e2e-image.png" in image_output, (
+            f"remote TUI did not receive the pasted file reference: {bytes(image_output[-2000:])!r}"
+        )
+        os.write(image_master, b"\x03")
+        image_process.wait(timeout=10)
+        assert image_process.returncode == 0, (
+            f"clipboard-image TUI disconnect returned {image_process.returncode}: "
+            f"{bytes(image_output[-2000:])!r}"
+        )
 
         reconnect, reconnect_master, reconnect_output, reconnect_visible = connect_until_visible(132, 44)
         _pty_size_probe(container_id, 132, 44)
@@ -303,6 +361,10 @@ def test_standalone_tui_tunnel_connect_propagates_size_resize_and_reconnects() -
                 httpx.delete(base_url + f"/api/opencode/containers/{container_id}", headers=headers, timeout=30)
             except httpx.HTTPError:
                 subprocess.run(docker_command("rm", "-f", container_id), check=False, capture_output=True)
+        try:
+            os.unlink(clipboard_marker)
+        except FileNotFoundError:
+            pass
         backend.terminate()
         try:
             backend.wait(timeout=10)
