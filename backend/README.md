@@ -73,6 +73,7 @@ src/
 | `OPENCODE_TUNNEL_RECOVERY_DELAY` | `2` | 重建失敗後的等待秒數 |
 | `OPENCODE_TUNNEL_RETRY_INITIAL_DELAY` | `5` | cloudflared 建立失敗（包含 Quick Tunnel 回覆 429）後首次重試等待秒數，採指數退避 |
 | `OPENCODE_TUNNEL_RETRY_MAX_DELAY` | `60` | cloudflared 指數退避的最長等待秒數 |
+| `OPENCODE_CLI_RELEASE_URL` | GitHub 最新 Release assets 網址 | 容器建立回應中各平台 CLI 安裝指令使用的下載來源 |
 
 範例：
 
@@ -82,7 +83,7 @@ OPENCODE_PASSWORD=replace-with-a-secret
 OPENCODE_ADMIN_TOKEN=replace-with-an-internal-token
 ```
 
-管理端點 `POST /api/opencode/containers` 需帶 `Authorization: Bearer <OPENCODE_ADMIN_TOKEN>`。成功回傳 `201`，包含 `id`、OpenCode `url`、`upload_url`、`upload_token`、`cli_install_command`、`upload_command`、`connect_url`、`connect_token` 與 `connect_command`；若初始化失敗或達容器數量上限，回傳 `503`。API 不回傳 OpenCode 密碼。`cli_install_command` 使用此儲存庫內附的 CLI 原始碼，請從儲存庫 checkout 根目錄執行。Windows 上透過 Docker Desktop 使用時，WSL 後端可自動選用 `docker.exe`，不需 WSL Docker CLI 或啟用 WSL Integration。
+管理端點 `POST /api/opencode/containers` 需帶 `Authorization: Bearer <OPENCODE_ADMIN_TOKEN>`。成功回傳 `201`，包含 `id`、OpenCode `url`、`upload_url`、`upload_token`、`cli_install_commands`（`windows_powershell`、`macos`、`linux`）、`upload_command`、`connect_url`、`connect_token` 與 `connect_command`；若初始化失敗或達容器數量上限，回傳 `503`。API 不回傳 OpenCode 密碼。各平台安裝指令會從 `OPENCODE_CLI_RELEASE_URL` 下載 GitHub Release 中的獨立執行檔，使用者不需要 Python、uv 或 Node.js。建立符合 `cli-v*` 格式的 Git tag 會觸發 CLI 建置及 Release 發佈流程。Windows 上透過 Docker Desktop 使用時，WSL 後端可自動選用 `docker.exe`，不需 WSL Docker CLI 或啟用 WSL Integration。
 
 CLI 安裝後先執行回應中的 `upload_command`，即可將目前專案上傳至容器 `/workspace/project`；再執行 `connect_command` 進入遠端 TUI。也可使用支援的 `--connect-url` 與 `--connect-token` 選項，在上傳後直接連線。
 

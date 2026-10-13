@@ -74,13 +74,48 @@ def test_create_opencode_waits_for_ready_container_and_hides_password() -> None:
         "id": "oc-123", "url": "https://quiet-fox.trycloudflare.com",
         "upload_url": "http://testserver/api/opencode/containers/oc-123/upload",
         "upload_token": "container-upload-token",
-        "cli_install_command": "python -m pip install ./cli",
+        "cli_install_commands": {
+            "windows_powershell": "$env:OPENCODE_PROJECT_RELEASE_URL = 'https://github.com/jason23452/more-opnecode-server/releases/latest/download'; irm 'https://github.com/jason23452/more-opnecode-server/releases/latest/download/install.ps1' | iex",
+            "macos": "curl -fsSL 'https://github.com/jason23452/more-opnecode-server/releases/latest/download/install.sh' | OPENCODE_PROJECT_RELEASE_URL='https://github.com/jason23452/more-opnecode-server/releases/latest/download' sh",
+            "linux": "curl -fsSL 'https://github.com/jason23452/more-opnecode-server/releases/latest/download/install.sh' | OPENCODE_PROJECT_RELEASE_URL='https://github.com/jason23452/more-opnecode-server/releases/latest/download' sh",
+        },
         "upload_command": "opencode-project upload --url http://testserver/api/opencode/containers/oc-123/upload --token=container-upload-token --project .",
         "connect_url": "ws://testserver/api/opencode/containers/oc-123/connect",
         "connect_token": "container-connect-token",
         "connect_command": "opencode-project connect --url ws://testserver/api/opencode/containers/oc-123/connect --token=container-connect-token",
     }
     assert "shared-secret" not in response.text
+
+
+def test_create_opencode_uses_configured_cli_release_url() -> None:
+    manager = Mock(spec=ContainerManager)
+    manager.create.return_value = {
+        "id": "oc-123", "url": "https://quiet-fox.trycloudflare.com",
+        "upload_token": "container-upload-token", "connect_token": "container-connect-token",
+    }
+    app.state.container_manager = manager
+    app.state.settings = Settings(
+        opencode_admin_token="admin-secret",
+        opencode_cli_release_url="https://downloads.example/cli/latest/download/",
+    )
+
+    response = client.post("/api/opencode/containers", headers={"Authorization": "Bearer admin-secret"})
+
+    assert response.status_code == 201
+    assert response.json()["cli_install_commands"] == {
+        "windows_powershell": (
+            "$env:OPENCODE_PROJECT_RELEASE_URL = 'https://downloads.example/cli/latest/download'; "
+            "irm 'https://downloads.example/cli/latest/download/install.ps1' | iex"
+        ),
+        "macos": (
+            "curl -fsSL 'https://downloads.example/cli/latest/download/install.sh' | "
+            "OPENCODE_PROJECT_RELEASE_URL='https://downloads.example/cli/latest/download' sh"
+        ),
+        "linux": (
+            "curl -fsSL 'https://downloads.example/cli/latest/download/install.sh' | "
+            "OPENCODE_PROJECT_RELEASE_URL='https://downloads.example/cli/latest/download' sh"
+        ),
+    }
 
 
 def test_connect_websocket_rejects_invalid_container_capability_with_actionable_code() -> None:

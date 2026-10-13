@@ -26,7 +26,7 @@ class ContainerCreated(BaseModel):
     url: str
     upload_url: str
     upload_token: str
-    cli_install_command: str = "python -m pip install ./cli"
+    cli_install_commands: dict[str, str]
     upload_command: str
     connect_url: str
     connect_token: str
@@ -51,6 +51,24 @@ def _service_unavailable(message: str, *args: str) -> HTTPException:
     return HTTPException(status_code=503, detail=_SAFE_SERVICE_ERROR)
 
 
+def _cli_install_commands(release_url: str) -> dict[str, str]:
+    release_url = release_url.rstrip("/")
+    return {
+        "windows_powershell": (
+            f"$env:OPENCODE_PROJECT_RELEASE_URL = '{release_url}'; "
+            f"irm '{release_url}/install.ps1' | iex"
+        ),
+        "macos": (
+            f"curl -fsSL '{release_url}/install.sh' | "
+            f"OPENCODE_PROJECT_RELEASE_URL='{release_url}' sh"
+        ),
+        "linux": (
+            f"curl -fsSL '{release_url}/install.sh' | "
+            f"OPENCODE_PROJECT_RELEASE_URL='{release_url}' sh"
+        ),
+    }
+
+
 @router.post("", response_model=ContainerCreated, status_code=201)
 def create_container(
     request: Request,
@@ -64,6 +82,9 @@ def create_container(
     connect_token = result.pop("connect_token")
     return ContainerCreated(
         **result,
+        cli_install_commands=_cli_install_commands(
+            request.app.state.settings.opencode_cli_release_url
+        ),
         upload_url=str(request.base_url).rstrip("/")
         + f"{request.app.state.settings.api_prefix}/opencode/containers/{result['id']}/upload",
         upload_command=(

@@ -1,14 +1,34 @@
 # OpenCode 專案上傳與遠端 TUI CLI
 
-此 CLI 原始碼隨本儲存庫一同提供；可在儲存庫 checkout 根目錄安裝至使用者本機，不需要安裝 Docker 或設定 OpenCode 管理密碼。API 建立容器回應中的安裝指令也需在 checkout 根目錄執行。
+此 CLI 以獨立執行檔透過 GitHub Releases 發佈。使用者安裝時不需要 Python、uv、Node.js 或 Docker；API 建立容器回應會依平台提供安裝命令。
 
-## 安裝
+## Windows PowerShell 安裝
 
-在儲存庫根目錄執行 API 建立回應中的安裝指令：
+執行建立容器回應中的 `cli_install_commands.windows_powershell`。也可直接下載並執行安裝腳本：
+
+```powershell
+irm 'https://github.com/jason23452/more-opnecode-server/releases/latest/download/install.ps1' | iex
+```
+
+安裝至 `%LOCALAPPDATA%\Programs\opencode-project`，並加入使用者 PATH。
+
+## macOS 安裝
+
+執行建立容器回應中的 `cli_install_commands.macos`，或使用：
 
 ```sh
-python -m pip install ./cli
+curl -fsSL 'https://github.com/jason23452/more-opnecode-server/releases/latest/download/install.sh' | sh
 ```
+
+支援 Intel 與 Apple Silicon；執行檔安裝至 `~/.local/bin`。
+
+## Linux 安裝
+
+執行建立容器回應中的 `cli_install_commands.linux`；安裝腳本目前提供 Linux x64 執行檔，並安裝至 `~/.local/bin`。
+
+## 發佈
+
+推送符合 `cli-v*` 格式的 Git tag（例如 `cli-v0.1.0`）會觸發 GitHub Actions，建置 Windows x64、macOS Intel/Apple Silicon 與 Linux x64 執行檔，並連同安裝腳本附加至該 GitHub Release。安裝指令下載 latest Release 的對應資產。
 
 ## 上傳專案
 
