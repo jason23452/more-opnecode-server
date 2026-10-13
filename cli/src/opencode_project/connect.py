@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
 import select
+import shutil
 import sys
 
 try:
@@ -51,6 +54,15 @@ def _terminal_input() -> bytes:
     return sys.stdin.buffer.read1(4096) if readable else b""
 
 
+def terminal_size() -> tuple[int, int]:
+    """Return terminal columns and rows on Windows and POSIX terminals."""
+    try:
+        size = os.get_terminal_size(sys.stdin.fileno())
+    except (AttributeError, OSError, ValueError):
+        size = shutil.get_terminal_size()
+    return max(1, size.columns), max(1, size.lines)
+
+
 def connect_terminal(url: str, token: str) -> None:
     old_settings = None
     if termios and sys.stdin.isatty():
@@ -61,7 +73,16 @@ def connect_terminal(url: str, token: str) -> None:
             url, additional_headers={"Authorization": f"Bearer {token}"},
             max_size=None, ping_interval=20,
         ) as remote:
+            last_size = None
             while True:
+                size = terminal_size()
+                if size != last_size:
+                    columns, rows = size
+                    remote.send(json.dumps(
+                        {"type": "resize", "columns": columns, "rows": rows},
+                        separators=(",", ":"),
+                    ))
+                    last_size = size
                 data = _terminal_input()
                 if data:
                     remote.send(data)

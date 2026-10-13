@@ -1,8 +1,11 @@
 """Opt-in black-box test requiring Docker and outbound Cloudflare access."""
 
 import os
+import fcntl
 import pty
 import select
+import struct
+import termios
 import tempfile
 import subprocess
 import sys
@@ -253,6 +256,7 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
             )
             os.unlink(oversized_file)
             terminal_master, terminal_slave = pty.openpty()
+            fcntl.ioctl(terminal_master, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
             tui_process = subprocess.Popen(
                 [cli_executable, "upload",
                  "--url", payload["upload_url"], f"--token={payload['upload_token']}", "--project", project,
@@ -279,6 +283,9 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
                 "remote TUI did not emit identifiable OpenCode output: "
                 f"{bytes(terminal_output[-4000:])!r}"
             )
+            # Exercise a live window change while the authenticated TUI session is active.
+            fcntl.ioctl(terminal_master, termios.TIOCSWINSZ, struct.pack("HHHH", 44, 132, 0, 0))
+            time.sleep(0.5)
             uploaded_during_session = subprocess.run(
                 docker_command("exec", target_id, "cat", "/workspace/project/upload-marker.txt"),
                 capture_output=True, text=True,

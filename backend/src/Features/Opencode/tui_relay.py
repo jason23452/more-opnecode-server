@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import json
 import os
 import select
 import subprocess
@@ -33,12 +34,17 @@ def relay(connection: ServerConnection) -> None:
         _SESSION_ACTIVE = True
 
     process = None
+    resize_write = None
     try:
+        resize_read, resize_write = os.pipe()
         process = subprocess.Popen(
             ["python3", "/usr/local/bin/opencode-pty-runner", "sh", "-lc",
              "cd /workspace/project && exec opencode ."],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            pass_fds=(resize_read,),
+            env={**os.environ, "OPENCODE_PTY_RESIZE_FD": str(resize_read)},
         )
+        os.close(resize_read)
         while process.poll() is None:
             readable, _, _ = select.select([process.stdout], [], [], 0.02)
             if readable:
@@ -53,11 +59,22 @@ def relay(connection: ServerConnection) -> None:
                 process.stdin.write(incoming)
                 process.stdin.flush()
             elif isinstance(incoming, str):
-                process.stdin.write(incoming.encode())
-                process.stdin.flush()
+                try:
+                    control = json.loads(incoming)
+                    columns, rows = control["columns"], control["rows"]
+                    if (control.get("type") == "resize"
+                            and type(columns) is int and type(rows) is int
+                            and 1 <= columns <= 1000 and 1 <= rows <= 1000):
+                        os.write(resize_write, json.dumps(
+                            {"columns": columns, "rows": rows}, separators=(",", ":")
+                        ).encode() + b"\n")
+                except (ValueError, KeyError, TypeError, OSError):
+                    pass
     except ConnectionClosed:
         pass
     finally:
+        if resize_write is not None:
+            os.close(resize_write)
         if process and process.poll() is None:
             process.terminate()
             try:
