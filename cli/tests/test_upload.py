@@ -54,6 +54,20 @@ class UploadTests(unittest.TestCase):
         self.assertEqual(sender.call_count, 2)
         self.assertEqual(sender.call_args_list[0].args, sender.call_args_list[1].args)
 
+    def test_stale_tunnel_failure_explains_manual_management_query_and_reuse_of_token(self):
+        with patch("opencode_project.upload._send", side_effect=OSError("network unavailable")), \
+                patch("opencode_project.upload.time.sleep"):
+            with self.assertRaisesRegex(RuntimeError, "管理 API.*upload_url.*原容器 upload token"):
+                upload_archive("https://stale.example/upload", "original-token", b"archive", retries=1)
+
+    def test_upload_help_does_not_offer_management_refresh_option(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "opencode_project.cli", "upload", "--help"],
+            cwd=Path(__file__).parents[1], capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("--refresh-url", result.stdout)
+
     def test_archive_above_single_request_limit_uses_chunk_protocol(self):
         import json
         with patch("opencode_project.upload._request", side_effect=[
@@ -63,34 +77,23 @@ class UploadTests(unittest.TestCase):
             upload_archive("https://container.trycloudflare.com/upload", "token", b"x" * (MAX_UPLOAD_BYTES + 1))
         self.assertEqual(request.call_count, 5)
 
-    def test_large_archive_is_chunked_and_refreshes_tunnel_target_after_failure(self):
+    def test_large_archive_retries_only_the_supplied_tunnel_target(self):
         import json
         import opencode_project.upload as upload
         monkey = unittest.mock.patch.multiple(upload, MAX_UPLOAD_BYTES=4, CHUNK_BYTES=3)
         with monkey, patch("opencode_project.upload._request") as request, \
-                patch("opencode_project.upload._refresh_target", return_value="https://new.example") as refresh, \
                 patch("opencode_project.upload.time.sleep"):
             request.side_effect = [
                 json.dumps({"session_id": "a" * 32}).encode(),
                 OSError("old Tunnel failed"), b"", b"", b"", b"",
             ]
-            upload.upload_archive("https://old.example/upload", "token", b"abcdefgh", retries=2,
-                                  refresh_url="https://control/upload-target")
+            upload.upload_archive("https://old.example/upload", "token", b"abcdefgh", retries=2)
 
-        refresh.assert_called_once_with("https://control/upload-target", "token")
+        self.assertTrue(all(call.args[0].startswith("https://old.example/") for call in request.call_args_list))
         chunk_calls = [call for call in request.call_args_list if "/chunks/" in call.args[0]]
         self.assertEqual([call.args[0].rsplit("/", 1)[1] for call in chunk_calls], ["0", "0", "1", "2"])
-        self.assertTrue(all("api" not in call.args[0] for call in chunk_calls))
         session_payload = json.loads(request.call_args_list[0].args[2])
         self.assertRegex(session_payload["session_id"], r"^[0-9a-f]{32}$")
-
-    def test_refresh_target_normalizes_upload_endpoint_to_tunnel_root(self):
-        import json
-        from opencode_project.upload import _refresh_target
-        with patch("opencode_project.upload._request", return_value=json.dumps({
-            "upload_url": "https://fresh.example/upload",
-        }).encode()):
-            self.assertEqual(_refresh_target("https://control/target", "token"), "https://fresh.example")
 
     def test_lost_session_creation_response_retries_with_same_idempotency_metadata(self):
         import json

@@ -38,6 +38,8 @@ curl -fsSL 'https://github.com/jason23452/more-opnecode-server/releases/latest/d
 opencode-project upload --url "<upload_url>" --token "<upload_token>" --project ./my-project
 ```
 
+CLI 的上傳請求只送往指定容器的 Tunnel，不會連線至管理 API。若 Tunnel URL 過期或發生網路錯誤，請由管理者透過受保護的列表/單筆管理 API 重新取得目前 `upload_url`，並使用建立容器時的原 upload token 重跑命令；重試可建立新的上傳工作階段並重新傳送檔案/區塊。CLI 不提供 `--refresh-url`。
+
 未指定 `--project` 時使用目前目錄。CLI 預設略過 `.git`、`node_modules`、虛擬環境、編譯產物與常見快取目錄；失敗時會自動重試三次，再次執行相同指令即可重傳。成功後檔案位於該容器的 `/workspace/project`。上傳授權資訊只適用於建立回應中的目標容器，請勿公開分享。
 
 ## 連入遠端 TUI
@@ -49,3 +51,5 @@ opencode-project connect --url "<connect_url>" --token "<connect_token>"
 ```
 
 也可在上傳指令加上 `--connect-url "<connect_url>" --connect-token "<connect_token>"`，上傳成功後自動進入 TUI。連線中斷後重新執行 `connect` 即可重連；同一容器同時只接受一個遠端 TUI 工作階段。
+
+TUI WebSocket 只連至指定容器 Tunnel。若 URL 過期或網路連線失敗，請透過管理 API 重新查詢目前 `connect_url`，並以原 connect token 重跑 `connect`。
