@@ -45,6 +45,8 @@ jobs:
       - name: Verify executable
         run: ./dist/${{ matrix.executable }} --help
         shell: bash
+        env:
+          PYTHONIOENCODING: cp1252
       - name: Rename release asset
         run: mv "dist/${{ matrix.executable }}" "dist/${{ matrix.asset }}"
         shell: bash

@@ -9,7 +9,16 @@ from opencode_project.connect import connect_terminal
 from opencode_project.upload import create_archive, upload_archive
 
 
+def _configure_console_encoding() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        encoding = getattr(stream, "encoding", None)
+        if reconfigure is not None and encoding and encoding.lower().replace("-", "") != "utf8":
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def main() -> None:
+    _configure_console_encoding()
     parser = argparse.ArgumentParser(prog="opencode-project", description="上傳專案資料夾至 OpenCode 容器")
     subcommands = parser.add_subparsers(dest="command", required=True)
     upload = subcommands.add_parser("upload", help="上傳專案資料夾")

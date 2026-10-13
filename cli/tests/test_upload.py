@@ -1,4 +1,7 @@
 import io
+import os
+import subprocess
+import sys
 import zipfile
 import tempfile
 import unittest
@@ -9,6 +12,17 @@ from opencode_project.upload import create_archive, upload_archive
 
 
 class UploadTests(unittest.TestCase):
+    def test_help_uses_unicode_output_when_system_encoding_cannot_render_chinese(self):
+        environment = os.environ | {"PYTHONIOENCODING": "cp1252"}
+        result = subprocess.run(
+            [sys.executable, "-m", "opencode_project.cli", "--help"],
+            cwd=Path(__file__).parents[1], env=environment,
+            capture_output=True, text=True, encoding="utf-8",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("上傳專案資料夾", result.stdout)
+
     def test_archive_omits_default_build_and_dependency_directories(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
