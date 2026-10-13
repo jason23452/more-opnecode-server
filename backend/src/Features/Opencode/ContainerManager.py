@@ -244,33 +244,36 @@ class ContainerManager:
             target = pathlib.Path('/workspace/project')
             parent = target.parent
             parent.mkdir(parents=True, exist_ok=True)
-            with zipfile.ZipFile(sys.stdin.buffer) as archive:
-                entries = archive.infolist()
-                if len(entries) > 100_000 or sum(item.file_size for item in entries) > 2 * 1024**3:
-                    raise ValueError('project archive exceeds extraction limits')
-                checked = []
-                for item in entries:
-                    relative = pathlib.PurePosixPath(item.filename)
-                    mode = item.external_attr >> 16
-                    if relative.is_absolute() or '..' in relative.parts or stat.S_ISLNK(mode):
-                        raise ValueError('unsafe project archive path')
-                    checked.append((item, relative))
-                staging = pathlib.Path(tempfile.mkdtemp(prefix='.project-upload-', dir=parent))
-                try:
-                    for item, relative in checked:
-                        destination = staging.joinpath(*relative.parts)
-                        destination.resolve().relative_to(staging.resolve())
-                        if item.is_dir():
-                            destination.mkdir(parents=True, exist_ok=True)
-                        else:
-                            destination.parent.mkdir(parents=True, exist_ok=True)
-                            destination.write_bytes(archive.read(item))
-                    if target.exists():
-                        shutil.rmtree(target)
-                    os.replace(staging, target)
-                finally:
-                    if staging.exists():
-                        shutil.rmtree(staging)
+            with tempfile.TemporaryFile() as streamed_archive:
+                shutil.copyfileobj(sys.stdin.buffer, streamed_archive)
+                streamed_archive.seek(0)
+                with zipfile.ZipFile(streamed_archive) as archive:
+                    entries = archive.infolist()
+                    if len(entries) > 100_000 or sum(item.file_size for item in entries) > 2 * 1024**3:
+                        raise ValueError('project archive exceeds extraction limits')
+                    checked = []
+                    for item in entries:
+                        relative = pathlib.PurePosixPath(item.filename)
+                        mode = item.external_attr >> 16
+                        if relative.is_absolute() or '..' in relative.parts or stat.S_ISLNK(mode):
+                            raise ValueError('unsafe project archive path')
+                        checked.append((item, relative))
+                    staging = pathlib.Path(tempfile.mkdtemp(prefix='.project-upload-', dir=parent))
+                    try:
+                        for item, relative in checked:
+                            destination = staging.joinpath(*relative.parts)
+                            destination.resolve().relative_to(staging.resolve())
+                            if item.is_dir():
+                                destination.mkdir(parents=True, exist_ok=True)
+                            else:
+                                destination.parent.mkdir(parents=True, exist_ok=True)
+                                destination.write_bytes(archive.read(item))
+                        if target.exists():
+                            shutil.rmtree(target)
+                        os.replace(staging, target)
+                    finally:
+                        if staging.exists():
+                            shutil.rmtree(staging)
         """).strip()
         result = subprocess.run(
             ["docker", "exec", "-i", container_id, "python3", "-c", extractor],
