@@ -104,10 +104,70 @@ describe('容器管理 Dashboard', () => {
     expect(await screen.findByText('retried-id')).toBeInTheDocument()
   })
 
-  it('以直接進入的建立路由提供建立功能佔位', async () => {
+  it('建立容器時使用 Bearer token，顯示完整回應並更新容器清單', async () => {
     window.history.replaceState({}, '', '/containers/create')
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => undefined } })
+    let created = false
+    let createCalls = 0
+    server.use(
+      http.post('*/opencode/containers', async ({ request }) => {
+        createCalls += 1
+        expect(request.headers.get('authorization')).toBe('Bearer create-token')
+        expect(await request.text()).toBe('')
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        created = true
+        return HttpResponse.json({
+          id: 'new-container',
+          url: 'https://tunnel.example',
+          upload_url: 'https://tunnel.example/upload',
+          connect_url: 'https://tunnel.example/connect',
+          upload_token: 'upload-secret',
+          connect_token: 'connect-secret',
+          cli_install_commands: { macos: 'install-mac', windows_powershell: 'install-windows', linux: 'install-linux' },
+          upload_command: 'upload --token upload-secret',
+          connect_command: 'connect --token connect-secret',
+        })
+      }),
+      http.get('*/opencode/containers', ({ request }) => {
+        expect(request.headers.get('authorization')).toBe('Bearer create-token')
+        return HttpResponse.json(created ? [{ id: 'new-container', status: 'healthy', url: 'https://tunnel.example' }] : [])
+      }),
+    )
     render(<MainApp />)
-    expect(await screen.findByRole('heading', { name: '建立容器' })).toBeInTheDocument()
-    expect(screen.getByText('建立容器功能即將提供')).toBeInTheDocument()
+    await userEvent.type(screen.getByLabelText('管理 token'), 'create-token')
+    await userEvent.click(screen.getByRole('button', { name: '建立 OpenCode 容器' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('正在建立容器')
+    expect(screen.getByRole('button', { name: '建立中…' })).toBeDisabled()
+    expect(await screen.findByText(/容器識別碼：new-container/)).toBeInTheDocument()
+    for (const value of [
+      'https://tunnel.example', 'https://tunnel.example/upload', 'https://tunnel.example/connect',
+      'upload-secret', 'connect-secret', 'install-mac', 'install-windows', 'install-linux',
+      'upload --token upload-secret', 'connect --token connect-secret',
+    ]) expect(screen.getByText(value)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '複製 upload token' }))
+    expect(await screen.findByText('已複製 upload token')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('link', { name: '容器清單' }))
+    expect(await screen.findByText('new-container')).toBeInTheDocument()
+    expect(createCalls).toBe(1)
+  })
+
+  it('建立失敗及 401 顯示錯誤且不呈現建立結果', async () => {
+    window.history.replaceState({}, '', '/containers/create')
+    let calls = 0
+    server.use(http.post('*/opencode/containers', ({ request }) => {
+      expect(request.headers.get('authorization')).toBe('Bearer retained-token')
+      calls += 1
+      return calls === 1
+        ? HttpResponse.json({ detail: 'unavailable' }, { status: 500 })
+        : HttpResponse.json({ detail: 'invalid token' }, { status: 401 })
+    }))
+    render(<MainApp />)
+    await userEvent.type(screen.getByLabelText('管理 token'), 'retained-token')
+    await userEvent.click(screen.getByRole('button', { name: '建立 OpenCode 容器' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('建立容器失敗')
+    expect(screen.queryByText('new-container')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '建立 OpenCode 容器' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('管理 token 無效')
+    expect(screen.getByLabelText('管理 token')).toHaveValue('retained-token')
   })
 })
