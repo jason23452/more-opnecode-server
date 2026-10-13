@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/vitest'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
 import { setupServer } from 'msw/node'
 import { MainApp } from '@/App/MainApp'
@@ -59,6 +59,63 @@ describe('容器管理 Dashboard', () => {
     expect(window.localStorage.length).toBe(0)
     expect(window.sessionStorage.length).toBe(0)
     expect(window.location.search).toBe('')
+  })
+
+  it('開啟容器連線 URL，並以選定平台查詢及複製連線指令', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    server.use(
+      http.get('*/opencode/containers', () => HttpResponse.json([
+        { id: 'container-1', status: 'healthy', url: 'https://tunnel.example', connect_url: 'https://tunnel.example/connect' },
+      ])),
+      http.get('*/opencode/containers/container-1', ({ request }) => {
+        expect(new URL(request.url).searchParams.get('environment')).toBe('windows')
+        expect(request.headers.get('authorization')).toBe('Bearer secret-token')
+        return HttpResponse.json({ connect_command: 'opencode-project connect --url wss://tunnel.example/connect --token=secret' })
+      }),
+    )
+    render(<MainApp />)
+    await userEvent.type(screen.getByLabelText('管理 token'), 'secret-token')
+    await userEvent.click(screen.getByRole('button', { name: '載入容器清單' }))
+
+    const connectLink = await screen.findByRole('link', { name: '開啟容器' })
+    expect(connectLink).toHaveAttribute('href', 'https://tunnel.example/connect')
+    expect(connectLink).toHaveAttribute('target', '_blank')
+    expect(connectLink).toHaveAttribute('rel', expect.stringContaining('noopener'))
+    await userEvent.selectOptions(screen.getByLabelText('作業系統'), 'windows')
+    expect(await screen.findByText('opencode-project connect --url wss://tunnel.example/connect --token=secret')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '複製連線指令' }))
+    expect(writeText).toHaveBeenCalledWith('opencode-project connect --url wss://tunnel.example/connect --token=secret')
+    expect(await screen.findByRole('status')).toHaveTextContent('連線指令已複製')
+  })
+
+  it('平台指令查詢顯示載入、一般錯誤及 401，並保留管理 token', async () => {
+    let calls = 0
+    let finishRequest: (() => void) | undefined
+    server.use(
+      http.get('*/opencode/containers', () => HttpResponse.json([
+        { id: 'container-1', status: 'healthy', url: 'https://tunnel.example', connect_url: 'https://tunnel.example/connect' },
+      ])),
+      http.get('*/opencode/containers/container-1', async () => {
+        calls += 1
+        if (calls === 1) {
+          await new Promise<void>((resolve) => { finishRequest = resolve })
+          return HttpResponse.json({ detail: 'unavailable' }, { status: 500 })
+        }
+        return HttpResponse.json({ detail: 'invalid token' }, { status: 401 })
+      }),
+    )
+    render(<MainApp />)
+    await userEvent.type(screen.getByLabelText('管理 token'), 'secret-token')
+    await userEvent.click(screen.getByRole('button', { name: '載入容器清單' }))
+    await screen.findByText('container-1')
+    await userEvent.selectOptions(screen.getByLabelText('作業系統'), 'mac')
+    expect(await screen.findByRole('status')).toHaveTextContent('正在取得連線指令')
+    finishRequest?.()
+    expect(await screen.findByRole('alert')).toHaveTextContent('取得容器連線指令失敗')
+    await userEvent.selectOptions(screen.getByLabelText('作業系統'), 'linux')
+    expect(await screen.findByRole('alert')).toHaveTextContent('管理 token 無效')
+    expect(screen.getByLabelText('管理 token')).toHaveValue('secret-token')
   })
 
   it('請求進行中顯示載入狀態並避免重複送出', async () => {
