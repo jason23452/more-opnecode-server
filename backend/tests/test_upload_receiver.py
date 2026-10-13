@@ -3,7 +3,7 @@ import zipfile
 from pathlib import Path
 import pytest
 
-from src.Features.Opencode.upload_receiver import install_archive, UploadSessions
+from src.Features.Opencode.upload_receiver import UploadManifest, install_archive, UploadSessions
 
 
 def _archive(name: str, content: str) -> bytes:
@@ -38,7 +38,7 @@ def test_failed_atomic_exchange_keeps_existing_workspace(tmp_path, monkeypatch) 
     assert not (target / "new.txt").exists()
 
 
-def test_failed_old_workspace_cleanup_rolls_back_new_tree(tmp_path, monkeypatch) -> None:
+def test_partial_old_workspace_cleanup_keeps_verified_new_tree_authoritative(tmp_path, monkeypatch) -> None:
     import src.Features.Opencode.upload_receiver as receiver
     target = tmp_path / "project"
     target.mkdir()
@@ -48,17 +48,19 @@ def test_failed_old_workspace_cleanup_rolls_back_new_tree(tmp_path, monkeypatch)
 
     def fail_backup_cleanup(path, *args, **kwargs):
         nonlocal failed_once
-        if Path(path).name.startswith(".project-upload-") and not failed_once:
+        if Path(path).name.startswith(".project-backup-") and not failed_once:
             failed_once = True
+            Path(path, "previous.txt").unlink()
             raise OSError("cleanup failed")
         return remove_tree(path, *args, **kwargs)
 
     monkeypatch.setattr(receiver.shutil, "rmtree", fail_backup_cleanup)
-    with pytest.raises(ValueError, match="Invalid project archive"):
-        install_archive(_archive("new.txt", "new"), target)
+    install_archive(_archive("new.txt", "new"), target)
 
-    assert (target / "previous.txt").read_text() == "preserve me"
-    assert not (target / "new.txt").exists()
+    assert (target / "new.txt").read_text() == "new"
+    assert not (target / "previous.txt").exists()
+    assert failed_once
+    assert any(path.name.startswith(".project-backup-") for path in tmp_path.iterdir())
 
 
 def test_receiver_rejects_unsafe_archive_without_changing_existing_project(tmp_path) -> None:
@@ -96,7 +98,8 @@ def test_chunked_session_installs_only_after_all_verified_chunks(tmp_path, monke
     target.mkdir()
     (target / "old.txt").write_text("keep until finalize")
     sessions = UploadSessions(target, tmp_path / "sessions", max_bytes=100_000)
-    session = sessions.create("b" * 32, len(archive), (len(archive) + chunk_size - 1) // chunk_size, __import__("hashlib").sha256(archive).hexdigest())
+    session = sessions.create("b" * 32, UploadManifest(len(archive), (len(archive) + chunk_size - 1) // chunk_size,
+                                                        __import__("hashlib").sha256(archive).hexdigest()))
 
     sessions.put_chunk(session, 1, archive[chunk_size:], __import__("hashlib").sha256(archive[chunk_size:]).hexdigest())
     assert (target / "old.txt").read_text() == "keep until finalize"
@@ -114,7 +117,7 @@ def test_chunked_session_retries_identical_chunk_and_rejects_conflict(tmp_path, 
     import src.Features.Opencode.upload_receiver as receiver
     monkeypatch.setattr(receiver, "CHUNK_BYTES", 3)
     sessions = UploadSessions(tmp_path / "project", tmp_path / "sessions", max_bytes=100)
-    session = sessions.create("c" * 32, 3, 1, "0" * 64)
+    session = sessions.create("c" * 32, UploadManifest(3, 1, "0" * 64))
     import hashlib
     digest = hashlib.sha256(b"abc").hexdigest()
     sessions.put_chunk(session, 0, b"abc", digest)
@@ -128,12 +131,12 @@ def test_chunk_session_creation_is_idempotent_and_rejects_metadata_conflict(tmp_
     monkeypatch.setattr(receiver, "CHUNK_BYTES", 3)
     sessions = UploadSessions(tmp_path / "project", tmp_path / "sessions", max_bytes=100)
 
-    first = sessions.create("a" * 32, 3, 1, "0" * 64)
-    retried = sessions.create("a" * 32, 3, 1, "0" * 64)
+    first = sessions.create("a" * 32, UploadManifest(3, 1, "0" * 64))
+    retried = sessions.create("a" * 32, UploadManifest(3, 1, "0" * 64))
 
     assert retried == first
     with pytest.raises(ValueError, match="conflict"):
-        sessions.create("a" * 32, 4, 2, "1" * 64)
+        sessions.create("a" * 32, UploadManifest(4, 2, "1" * 64))
 
 
 def test_chunked_session_rejects_corrupt_chunk_without_touching_workspace(tmp_path, monkeypatch) -> None:
@@ -144,7 +147,7 @@ def test_chunked_session_rejects_corrupt_chunk_without_touching_workspace(tmp_pa
     target.mkdir()
     (target / "existing.txt").write_text("preserved")
     sessions = UploadSessions(target, tmp_path / "sessions", max_bytes=10)
-    session = sessions.create("d" * 32, 3, 1, hashlib.sha256(b"abc").hexdigest())
+    session = sessions.create("d" * 32, UploadManifest(3, 1, hashlib.sha256(b"abc").hexdigest()))
 
     with pytest.raises(ValueError, match="Corrupt chunk"):
         sessions.put_chunk(session, 0, b"bad", hashlib.sha256(b"abc").hexdigest())

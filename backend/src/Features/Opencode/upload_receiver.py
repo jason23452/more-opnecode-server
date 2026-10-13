@@ -28,7 +28,7 @@ MAX_SINGLE_UPLOAD_BYTES = 95 * 1024 * 1024
 
 
 @dataclass(frozen=True)
-class UploadMetadata:
+class UploadManifest:
     size: int
     chunks: int
     sha256: str
@@ -66,40 +66,39 @@ class UploadSessions:
             except OSError:
                 continue
 
-    def create(self, client_id: str, size: int, chunks: int, digest: str) -> str:
+    def create(self, client_id: str, manifest: UploadManifest) -> str:
         if not re.fullmatch(r"[0-9a-f]{32}", client_id):
             raise ValueError("Invalid upload session ID")
-        if size <= 0 or size > self.max_bytes or chunks <= 0 or chunks > 100_000:
+        if manifest.size <= 0 or manifest.size > self.max_bytes or manifest.chunks <= 0 or manifest.chunks > 100_000:
             raise ValueError("Invalid upload size or chunk count")
-        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        if not re.fullmatch(r"[0-9a-f]{64}", manifest.sha256):
             raise ValueError("Invalid archive digest")
-        if chunks != (size + CHUNK_BYTES - 1) // CHUNK_BYTES:
+        if manifest.chunks != (manifest.size + CHUNK_BYTES - 1) // CHUNK_BYTES:
             raise ValueError("Invalid chunk count for archive size")
-        metadata = UploadMetadata(size, chunks, digest)
         session = client_id
         directory = self.root / session
         with self.lock:
             if directory.exists():
-                if json.loads((directory / "metadata.json").read_text()) != asdict(metadata):
+                if json.loads((directory / "metadata.json").read_text()) != asdict(manifest):
                     raise ValueError("Upload session metadata conflict")
                 return session
             directory.mkdir(mode=0o700)
-            (directory / "metadata.json").write_text(json.dumps(asdict(metadata)))
+            (directory / "metadata.json").write_text(json.dumps(asdict(manifest)))
         return session
 
-    def _session(self, session: str) -> tuple[Path, dict]:
+    def _session(self, session: str) -> tuple[Path, UploadManifest]:
         if not re.fullmatch(r"[0-9a-f]{32}", session):
             raise ValueError("Invalid upload session")
         directory = self.root / session
-        metadata = json.loads((directory / "metadata.json").read_text())
-        return directory, metadata
+        manifest = UploadManifest(**json.loads((directory / "metadata.json").read_text()))
+        return directory, manifest
 
     def put_chunk(self, session: str, index: int, data: bytes, digest: str) -> None:
         with self.lock:
             directory, metadata = self._session(session)
-            if index < 0 or index >= metadata["chunks"]:
+            if index < 0 or index >= metadata.chunks:
                 raise ValueError("Invalid chunk index")
-            expected_size = min(CHUNK_BYTES, metadata["size"] - index * CHUNK_BYTES)
+            expected_size = min(CHUNK_BYTES, metadata.size - index * CHUNK_BYTES)
             if len(data) != expected_size or hashlib.sha256(data).hexdigest() != digest:
                 raise ValueError("Corrupt chunk")
             destination = directory / f"{index}.chunk"
@@ -114,7 +113,7 @@ class UploadSessions:
     def finalize(self, session: str) -> None:
         with self.lock, _INSTALL_LOCK:
             directory, metadata = self._session(session)
-            paths = [directory / f"{index}.chunk" for index in range(metadata["chunks"])]
+            paths = [directory / f"{index}.chunk" for index in range(metadata.chunks)]
             if not all(path.is_file() for path in paths):
                 raise ValueError("Missing upload chunks")
             digest = hashlib.sha256()
@@ -124,7 +123,7 @@ class UploadSessions:
                     for block in iter(lambda: chunk.read(1024 * 1024), b""):
                         digest.update(block)
                         total += len(block)
-            if total != metadata["size"] or digest.hexdigest() != metadata["sha256"]:
+            if total != metadata.size or digest.hexdigest() != metadata.sha256:
                 raise ValueError("Archive size or digest mismatch")
             with tempfile.TemporaryFile(dir=self.root) as archive_file:
                 for path in paths:
@@ -155,8 +154,10 @@ def install_archive(data: bytes | Path, target: Path, max_bytes: int = MAX_UPLOA
             target = target.resolve()
             parent = target.parent
             parent.mkdir(parents=True, exist_ok=True)
-            staging = Path(tempfile.mkdtemp(prefix=".project-upload-", dir=parent))
+            _cleanup_stale_project_backups(parent)
+            staging = Path(tempfile.mkdtemp(prefix=".project-backup-", dir=parent))
             backup: Path | None = None
+            retain_backup = False
             try:
                 for item, relative in safe_entries:
                     destination = staging.joinpath(*relative.parts)
@@ -176,13 +177,24 @@ def install_archive(data: bytes | Path, target: Path, max_bytes: int = MAX_UPLOA
                     try:
                         shutil.rmtree(backup)
                     except OSError:
-                        _exchange_directories(backup, target)
-                        raise
+                        # The exchange has committed: keep the verified target authoritative.
+                        # A partially removed old tree stays named as a backup for later cleanup.
+                        retain_backup = True
             finally:
-                if staging.exists():
+                if staging.exists() and not retain_backup:
                     shutil.rmtree(staging)
     except (zipfile.BadZipFile, OSError, RuntimeError) as error:
         raise ValueError("Invalid project archive") from error
+
+
+def _cleanup_stale_project_backups(parent: Path) -> None:
+    cutoff = time.time() - SESSION_TTL_SECONDS
+    for backup in parent.glob(".project-backup-*"):
+        try:
+            if backup.stat().st_mtime < cutoff:
+                shutil.rmtree(backup, ignore_errors=True)
+        except OSError:
+            continue
 
 
 class UploadHandler(BaseHTTPRequestHandler):
@@ -235,7 +247,8 @@ class UploadHandler(BaseHTTPRequestHandler):
                 return
             try:
                 payload = json.loads(data)
-                session = self.sessions.create(payload["session_id"], int(payload["size"]), int(payload["chunks"]), payload["sha256"])
+                manifest = UploadManifest(int(payload["size"]), int(payload["chunks"]), payload["sha256"])
+                session = self.sessions.create(payload["session_id"], manifest)
             except (ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
                 self.send_error(400, str(error))
                 return
