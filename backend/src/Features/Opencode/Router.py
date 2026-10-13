@@ -26,7 +26,7 @@ class ContainerCreated(BaseModel):
     url: str
     upload_url: str
     upload_token: str
-    cli_install_command: str = "uv tool install ./cli"
+    cli_install_command: str = "python -m pip install ./cli"
     upload_command: str
     connect_url: str
     connect_token: str

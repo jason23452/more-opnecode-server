@@ -82,7 +82,9 @@ OPENCODE_PASSWORD=replace-with-a-secret
 OPENCODE_ADMIN_TOKEN=replace-with-an-internal-token
 ```
 
-管理端點 `POST /api/opencode/containers` 需帶 `Authorization: Bearer <OPENCODE_ADMIN_TOKEN>`。成功回傳 `201` 與 `{ "id", "url" }`；若初始化失敗或達容器數量上限，回傳 `503`。API 不回傳 OpenCode 密碼。
+管理端點 `POST /api/opencode/containers` 需帶 `Authorization: Bearer <OPENCODE_ADMIN_TOKEN>`。成功回傳 `201`，包含 `id`、OpenCode `url`、`upload_url`、`upload_token`、`cli_install_command`、`upload_command`、`connect_url`、`connect_token` 與 `connect_command`；若初始化失敗或達容器數量上限，回傳 `503`。API 不回傳 OpenCode 密碼。`cli_install_command` 使用此儲存庫內附的 CLI 原始碼，請從儲存庫 checkout 根目錄執行。Windows 上透過 Docker Desktop 使用時，WSL 後端可自動選用 `docker.exe`，不需 WSL Docker CLI 或啟用 WSL Integration。
+
+CLI 安裝後先執行回應中的 `upload_command`，即可將目前專案上傳至容器 `/workspace/project`；再執行 `connect_command` 進入遠端 TUI。也可使用支援的 `--connect-url` 與 `--connect-token` 選項，在上傳後直接連線。
 
 真實 Docker/Cloudflare 黑箱測試需可用 Docker daemon 與外網，設定 `OPENCODE_DOCKER_E2E=1` 後執行 `uv run pytest tests/test_opencode_docker_e2e.py -v`。測試會啟動實際後端，呼叫管理 API，驗證 Tunnel 故障後 URL 更新、可連線且原容器工作資料保留，最後清理測試容器。
 
