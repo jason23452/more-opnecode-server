@@ -147,7 +147,7 @@ class UploadTests(unittest.TestCase):
             unittest.mock.call('{"type":"resize","columns":120,"rows":40}'),
         ])
 
-    def test_windows_terminal_query_replies_are_batched_into_one_websocket_frame(self):
+    def test_windows_terminal_query_replies_are_not_forwarded_to_remote_tui(self):
         import opencode_project.connect as connect
 
         query_reply = "\x1b[?2026;2$y"
@@ -175,7 +175,27 @@ class UploadTests(unittest.TestCase):
                 patch.object(connect, "websocket_connect", return_value=remote):
             connect.connect_terminal("ws://tunnel.example/connect", "scoped-token")
 
-        self.assertIn(unittest.mock.call(query_reply.encode("utf-8")), remote.send.call_args_list)
+        self.assertNotIn(unittest.mock.call(query_reply.encode("utf-8")), remote.send.call_args_list)
+
+    def test_windows_terminal_query_replies_are_not_forwarded_as_user_input(self):
+        import opencode_project.connect as connect
+
+        terminal_input = "ok\x1b[?2026;2$y\x1b[1;1R\x1b[4;600;1200t\x1b]10;rgb:0c0c/0c0c/0c0c\x07x"
+
+        class FakeMsvcrt:
+            def __init__(self):
+                self.characters = list(terminal_input)
+
+            def kbhit(self):
+                return bool(self.characters)
+
+            def getwch(self):
+                return self.characters.pop(0)
+
+        with patch.object(connect, "msvcrt", FakeMsvcrt()), \
+                patch.object(connect.sys, "stdin") as stdin:
+            stdin.isatty.return_value = True
+            self.assertEqual(connect._terminal_input(), b"okx")
 
     def test_connect_reports_same_known_close_code_message_for_closed_and_failed_connections(self):
         from opencode_project.connect import connect_terminal

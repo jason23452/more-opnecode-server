@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import select
 import shutil
 import sys
@@ -20,6 +21,14 @@ except ImportError:  # pragma: no cover - exercised on POSIX
 
 from websockets.sync.client import connect as websocket_connect
 from websockets.exceptions import ConnectionClosed
+
+_TERMINAL_QUERY_REPLIES = re.compile(
+    rb"\x1b\[\?[0-9;]+\$y|"       # DEC private-mode report
+    rb"\x1b\[[0-9]+;[0-9]+R|"      # cursor-position report
+    rb"\x1b\[4;[0-9]+;[0-9]+t|"   # text-area size report
+    rb"\x1b\[[?>][0-9;]+c|"        # device-attributes report
+    rb"\x1b\]10;rgb:[0-9a-fA-F/]+(?:\x07|\x1b\\)"  # foreground-color report
+)
 
 
 def _known_close_message(code: int | None) -> str | None:
@@ -49,7 +58,10 @@ def _terminal_input() -> bytes:
                     data.extend(special_keys.get(msvcrt.getwch(), b""))
                 continue
             data.extend(character.encode("utf-8", errors="replace"))
-        return bytes(data)
+        # Windows Terminal sends responses to TUI capability queries through
+        # the same console input stream as keystrokes. Do not relay those
+        # responses back to the remote TUI as if the user had typed them.
+        return _TERMINAL_QUERY_REPLIES.sub(b"", bytes(data))
     readable, _, _ = select.select([sys.stdin], [], [], 0.05)
     return sys.stdin.buffer.read1(4096) if readable else b""
 
