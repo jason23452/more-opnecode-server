@@ -11,6 +11,7 @@ import uuid
 
 import httpx
 import pytest
+from src.Features.Opencode.DockerCli import docker_command
 
 
 def _wait_for_healthy_container(query, expected_url: str, timeout: float, interval: float) -> dict:
@@ -203,6 +204,15 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
                 "remote TUI did not emit identifiable OpenCode output: "
                 f"{bytes(terminal_output[-4000:])!r}"
             )
+            uploaded_during_session = subprocess.run(
+                docker_command("exec", target_id, "cat", "/workspace/project/upload-marker.txt"),
+                capture_output=True, text=True,
+            )
+            assert uploaded_during_session.returncode == 0 and uploaded_during_session.stdout == marker, (
+                "one-command upload/connect entered the TUI without the project being present: "
+                f"exit={uploaded_during_session.returncode}, stdout={uploaded_during_session.stdout!r}, "
+                f"stderr={uploaded_during_session.stderr!r}"
+            )
             busy = subprocess.run(
                 [cli_executable, "connect", "--url", payload["connect_url"],
                  "--token", payload["connect_token"]],
@@ -216,8 +226,33 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
             tui_process = None
             os.close(terminal_master)
 
+            reconnect_master, reconnect_slave = pty.openpty()
+            reconnect = subprocess.Popen(
+                [cli_executable, "connect", "--url", payload["connect_url"], "--token", payload["connect_token"]],
+                stdin=reconnect_slave, stdout=reconnect_slave, stderr=reconnect_slave,
+            )
+            os.close(reconnect_slave)
+            reconnect_output = bytearray()
+            reconnect_deadline = time.monotonic() + 20
+            while time.monotonic() < reconnect_deadline and reconnect.poll() is None:
+                readable, _, _ = select.select([reconnect_master], [], [], 0.2)
+                if readable:
+                    try:
+                        reconnect_output.extend(os.read(reconnect_master, 65536))
+                    except OSError:
+                        break
+                if b"OpenCode" in reconnect_output or b"opencode" in reconnect_output:
+                    break
+            assert reconnect.poll() is None and (b"OpenCode" in reconnect_output or b"opencode" in reconnect_output), (
+                "TUI could not reconnect after the prior session disconnected: "
+                f"exit={reconnect.poll()}, output={bytes(reconnect_output[-4000:])!r}"
+            )
+            os.write(reconnect_master, b"\x03")
+            reconnect.wait(timeout=10)
+            os.close(reconnect_master)
+
         uploaded = subprocess.run(
-            ["docker", "exec", target_id, "cat", "/workspace/project/upload-marker.txt"],
+            docker_command("exec", target_id, "cat", "/workspace/project/upload-marker.txt"),
             capture_output=True, text=True,
         )
         assert uploaded.returncode == 0 and uploaded.stdout == marker, (
@@ -225,7 +260,7 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
             f"exit={uploaded.returncode}, stdout={uploaded.stdout!r}, stderr={uploaded.stderr!r}"
         )
         absent = subprocess.run(
-            ["docker", "exec", second_id, "test", "!", "-e", "/workspace/project/upload-marker.txt"],
+            docker_command("exec", second_id, "test", "!", "-e", "/workspace/project/upload-marker.txt"),
             capture_output=True, text=True,
         )
         assert absent.returncode == 0, (
@@ -236,12 +271,12 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
         deleted = httpx.delete(base_url + f"/api/opencode/containers/{target_id}", headers=headers, timeout=30)
         assert deleted.status_code == 204, f"delete failed: HTTP {deleted.status_code}: {deleted.text}"
         managed_ids.remove(target_id)
-        inspect = subprocess.run(["docker", "inspect", target_id], capture_output=True, text=True)
+        inspect = subprocess.run(docker_command("inspect", target_id), capture_output=True, text=True)
         assert inspect.returncode != 0, (
             f"deleted container {target_id} still exists: stdout={inspect.stdout!r}, stderr={inspect.stderr!r}"
         )
         second_check = subprocess.run(
-            ["docker", "exec", second_id, "test", "!", "-e", "/workspace/project/upload-marker.txt"],
+            docker_command("exec", second_id, "test", "!", "-e", "/workspace/project/upload-marker.txt"),
             capture_output=True, text=True,
         )
         assert second_check.returncode == 0, (
@@ -255,9 +290,9 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
             try:
                 response = httpx.delete(base_url + f"/api/opencode/containers/{container_id}", headers=headers, timeout=30)
                 if response.status_code not in (204, 404):
-                    subprocess.run(["docker", "rm", "-f", container_id], check=False, capture_output=True)
+                    subprocess.run(docker_command("rm", "-f", container_id), check=False, capture_output=True)
             except httpx.HTTPError:
-                subprocess.run(["docker", "rm", "-f", container_id], check=False, capture_output=True)
+                subprocess.run(docker_command("rm", "-f", container_id), check=False, capture_output=True)
         process.terminate()
         try:
             process.wait(timeout=10)
@@ -324,7 +359,7 @@ def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
                 "--project", project,
             ], check=True)
             assert subprocess.run([
-                "docker", "exec", container_id, "cat", "/workspace/project/upload-marker.txt",
+                *docker_command("exec", container_id, "cat", "/workspace/project/upload-marker.txt"),
             ], capture_output=True, text=True, check=True).stdout == marker
         second = httpx.post(
             base_url + "/api/opencode/containers", headers={"Authorization": f"Bearer {admin_token}"},
@@ -334,7 +369,7 @@ def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
         second_container_id = second.json()["id"]
         assert second_container_id != container_id
         assert subprocess.run([
-            "docker", "exec", second_container_id, "test", "!", "-e",
+            *docker_command("exec", second_container_id, "test", "!", "-e"),
             "/workspace/project/upload-marker.txt",
         ], capture_output=True).returncode == 0
         headers = {"Authorization": f"Bearer {admin_token}"}
@@ -360,8 +395,8 @@ def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
         assert queried.json()["url"] == payload["url"]
 
         marker = f"tunnel-recovery-{uuid.uuid4().hex}"
-        subprocess.run(["docker", "exec", container_id, "sh", "-c", f"printf '%s' '{marker}' >/tmp/opencode-retention-marker"], check=True)
-        subprocess.run(["docker", "exec", container_id, "sh", "-c", "pkill -x cloudflared"], check=True)
+        subprocess.run(docker_command("exec", container_id, "sh", "-c", f"printf '%s' '{marker}' >/tmp/opencode-retention-marker"), check=True)
+        subprocess.run(docker_command("exec", container_id, "sh", "-c", "pkill -x cloudflared"), check=True)
         deadline = time.monotonic() + 180
         recovered_url = payload["url"]
         while time.monotonic() < deadline:
@@ -376,7 +411,7 @@ def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
         reachable = _probe_external_url(recovered_url, password)
         assert reachable.status_code == 200
         assert subprocess.run(
-            ["docker", "exec", container_id, "sh", "-c", f"test \"$(cat /tmp/opencode-retention-marker)\" = '{marker}'"],
+            docker_command("exec", container_id, "sh", "-c", f"test \"$(cat /tmp/opencode-retention-marker)\" = '{marker}'"),
             capture_output=True,
         ).returncode == 0
         listed_after_recovery = httpx.get(base_url + "/api/opencode/containers", headers=headers, timeout=20).json()
@@ -424,7 +459,7 @@ def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
             headers=headers, timeout=30,
         )
         assert deleted.status_code == 204
-        assert subprocess.run(["docker", "inspect", container_id], capture_output=True).returncode != 0
+        assert subprocess.run(docker_command("inspect", container_id), capture_output=True).returncode != 0
         _assert_tunnel_no_longer_serves(recovered_url, password)
         missing = httpx.delete(
             base_url + f"/api/opencode/containers/{container_id}", headers=headers, timeout=10,
@@ -432,8 +467,8 @@ def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
         assert missing.status_code == 404
     finally:
         if container_id:
-            subprocess.run(["docker", "rm", "-f", container_id], check=False, capture_output=True)
+            subprocess.run(docker_command("rm", "-f", container_id), check=False, capture_output=True)
         if second_container_id:
-            subprocess.run(["docker", "rm", "-f", second_container_id], check=False, capture_output=True)
+            subprocess.run(docker_command("rm", "-f", second_container_id), check=False, capture_output=True)
         process.terminate()
         process.wait(timeout=10)

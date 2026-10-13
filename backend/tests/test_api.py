@@ -91,12 +91,14 @@ def test_connect_websocket_rejects_invalid_container_capability_with_actionable_
     app.state.container_manager = manager
     app.state.settings = Settings(opencode_admin_token="admin-secret")
 
-    try:
-        with client.websocket_connect("/api/opencode/containers/oc-123/connect?token=wrong"):
+    with client.websocket_connect("/api/opencode/containers/oc-123/connect?token=wrong") as websocket:
+        try:
+            websocket.receive_bytes()
+        except WebSocketDisconnect as error:
+            assert error.code == 4401
+            assert "授權無效" in error.reason
+        else:
             raise AssertionError("invalid capability must not open the terminal")
-    except WebSocketDisconnect as error:
-        assert error.code == 4401
-        assert "授權無效" in error.reason
 
 
 def test_connect_websocket_reports_busy_container_without_opening_second_session() -> None:
@@ -106,12 +108,14 @@ def test_connect_websocket_reports_busy_container_without_opening_second_session
     manager.open_tui.side_effect = RuntimeError("already connected")
     app.state.container_manager = manager
 
-    try:
-        with client.websocket_connect("/api/opencode/containers/oc-123/connect?token=valid"):
+    with client.websocket_connect("/api/opencode/containers/oc-123/connect?token=valid") as websocket:
+        try:
+            websocket.receive_bytes()
+        except WebSocketDisconnect as error:
+            assert error.code == 4409
+            assert "已有 TUI 工作階段" in error.reason
+        else:
             raise AssertionError("second TUI session must be refused")
-    except WebSocketDisconnect as error:
-        assert error.code == 4409
-        assert "已有 TUI 工作階段" in error.reason
 
 
 def test_create_opencode_upload_command_passes_leading_dash_token_safely() -> None:

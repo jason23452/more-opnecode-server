@@ -67,6 +67,7 @@ Status: ready-for-agent
 - 專案上傳由本機 CLI 經後端提供的 API/連線能力完成，後端負責將資料放入指定容器的工作目錄。每個容器擁有隔離的專案副本；不進行本機與遠端的持續雙向同步，也不建立 Git worktree/branch 流程。
 - 上傳失敗或中斷時保留容器，CLI 可對同一容器重試。CLI 只有在上傳完成後才啟動/連入該容器的 OpenCode TUI。專案資料隨容器存續；移除容器時一併清除，不要求獨立持久化 Docker volume。
 - 本機 CLI 連入遠端容器中的互動式 OpenCode TUI；每個容器同時只允許一個互動式 TUI 工作階段。容器仍須符合既有 OpenCode server/Tunnel 管理需求。
+- 執行環境相容性：Docker Desktop 可在 Windows 上運行，而 WSL 可刻意不安裝 Linux Docker CLI 且不啟用 WSL Integration。後端在 WSL 中若偵測到 `docker.exe`，所有 Docker 呼叫（包含上傳及 WebSocket relay）須自動使用它；build 的 WSL 絕對路徑須轉成 Docker Desktop 可解析的 Windows 路徑。WebSocket relay 使用 `docker exec -i` pipes，並由容器內 Python PTY runner 為 OpenCode TUI 配置 controlling PTY，不把 WSL host PTY 傳給 `docker.exe exec -it`。原生 Linux 環境沿用 `docker`。
 - 以部署設定限制單一容器 CPU、記憶體及同時執行容器數量。
 - 遵循 ADR「使用 Docker OpenCode 容器與 Cloudflare Quick Tunnel」：使用同主機 Docker、容器內 `cloudflared` 與臨時 Quick Tunnel；接受 URL 可因 Tunnel 重建而改變，並以健康監控及查詢最新 URL 因應。
 - 主要測試 seam 為實際運作環境中的黑箱 HTTP 管理 API 與本機 CLI 可觀察的上傳/終端互動。測試需啟動真實後端及 Docker 環境，透過 API 建立實際容器與 Quick Tunnel，並從 Tunnel URL 驗證服務可達及管理生命週期。

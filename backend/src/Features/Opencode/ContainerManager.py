@@ -11,6 +11,8 @@ import time
 import zipfile
 from pathlib import Path
 
+from .DockerCli import docker_command
+
 
 class ContainerManager:
     """建立固定規格的 OpenCode 容器與 Quick Tunnel。"""
@@ -280,7 +282,7 @@ class ContainerManager:
                             shutil.rmtree(staging)
         """).strip()
         result = subprocess.run(
-            ["docker", "exec", "-i", container_id, "python3", "-c", extractor],
+            docker_command("exec", "-i", container_id, "python3", "-c", extractor),
             input=archive, capture_output=True, timeout=300,
         )
         if result.returncode != 0:
@@ -350,7 +352,7 @@ class ContainerManager:
 
     @staticmethod
     def _docker(*args: str, check: bool = True, timeout: int | None = 30) -> subprocess.CompletedProcess:
-        result = subprocess.run(["docker", *args], capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run(docker_command(*args), capture_output=True, text=True, timeout=timeout)
         if check and result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or "Docker command failed")
         return result
