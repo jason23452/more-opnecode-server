@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     opencode_tunnel_recovery_delay: float = 2.0
     opencode_tunnel_retry_initial_delay: int = 5
     opencode_tunnel_retry_max_delay: int = 60
+    opencode_upload_max_bytes: int = 95 * 1024 * 1024
     opencode_cli_release_url: str = (
         "https://github.com/jason23452/more-opnecode-server/releases/latest/download"
     )

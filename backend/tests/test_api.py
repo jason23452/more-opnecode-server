@@ -72,14 +72,14 @@ def test_create_opencode_waits_for_ready_container_and_hides_password() -> None:
     assert response.status_code == 201
     assert response.json() == {
         "id": "oc-123", "url": "https://quiet-fox.trycloudflare.com",
-        "upload_url": "http://testserver/api/opencode/containers/oc-123/upload",
+        "upload_url": "https://quiet-fox.trycloudflare.com/upload",
         "upload_token": "container-upload-token",
         "cli_install_commands": {
             "windows_powershell": "$env:OPENCODE_PROJECT_RELEASE_URL = 'https://github.com/jason23452/more-opnecode-server/releases/latest/download'; irm 'https://github.com/jason23452/more-opnecode-server/releases/latest/download/install.ps1' | iex",
             "macos": "curl -fsSL 'https://github.com/jason23452/more-opnecode-server/releases/latest/download/install.sh' | OPENCODE_PROJECT_RELEASE_URL='https://github.com/jason23452/more-opnecode-server/releases/latest/download' sh",
             "linux": "curl -fsSL 'https://github.com/jason23452/more-opnecode-server/releases/latest/download/install.sh' | OPENCODE_PROJECT_RELEASE_URL='https://github.com/jason23452/more-opnecode-server/releases/latest/download' sh",
         },
-        "upload_command": "opencode-project upload --url http://testserver/api/opencode/containers/oc-123/upload --token=container-upload-token --project .",
+        "upload_command": "opencode-project upload --url https://quiet-fox.trycloudflare.com/upload --token=container-upload-token --project .",
         "connect_url": "ws://testserver/api/opencode/containers/oc-123/connect",
         "connect_token": "container-connect-token",
         "connect_command": "opencode-project connect --url ws://testserver/api/opencode/containers/oc-123/connect --token=container-connect-token",
@@ -166,28 +166,23 @@ def test_create_opencode_upload_command_passes_leading_dash_token_safely() -> No
 
     assert response.status_code == 201
     assert response.json()["upload_command"] == (
-        "opencode-project upload --url http://testserver/api/opencode/containers/oc-123/upload "
+        "opencode-project upload --url https://quiet-fox.trycloudflare.com/upload "
         "--token=-token-starting-with-dash --project ."
     )
 
 
-def test_upload_api_requires_container_token_and_writes_only_to_target_workspace() -> None:
+def test_management_api_does_not_expose_or_relay_upload_payload() -> None:
     manager = Mock(spec=ContainerManager)
-    manager.upload.return_value = None
     app.state.container_manager = manager
     app.state.settings = Settings(opencode_admin_token="admin-secret")
-    archive = b"project archive"
-
-    denied = client.put("/api/opencode/containers/oc-123/upload", content=archive)
-    uploaded = client.put(
+    response = client.put(
         "/api/opencode/containers/oc-123/upload",
-        content=archive,
-        headers={"Authorization": "Bearer container-upload-token", "Content-Type": "application/gzip"},
+        content=b"project archive",
+        headers={"Authorization": "Bearer container-upload-token"},
     )
 
-    assert denied.status_code == 401
-    assert uploaded.status_code == 204
-    manager.upload.assert_called_once_with("oc-123", "container-upload-token", archive)
+    assert response.status_code == 404
+    assert not hasattr(manager, "upload")
 
 
 def test_create_opencode_reports_capacity_limit_without_starting_container() -> None:
@@ -618,84 +613,6 @@ def test_container_manager_uses_full_ids_when_checking_creation_capacity() -> No
     assert manager._docker.call_args_list[0].args == (
         "ps", "-q", "--no-trunc", "--filter", "label=dynamic-opencode=true",
     )
-
-
-def test_container_manager_upload_rejects_wrong_container_capability_without_writing() -> None:
-    manager = ContainerManager(Settings())
-    manager._docker = Mock(return_value=CompletedProcess([], 0, "expected-token\n", ""))
-
-    try:
-        manager.upload("oc-target", "wrong-token", b"PK archive")
-    except PermissionError:
-        pass
-    else:
-        raise AssertionError("a different container's capability must not authorize upload")
-
-    manager._docker.assert_called_once_with(
-        "inspect", "-f", '{{ index .Config.Labels "dynamic-opencode-upload-token" }}',
-        "oc-target", check=False,
-    )
-
-
-def test_container_manager_upload_rejects_archive_path_traversal_before_container_write() -> None:
-    import io
-    import zipfile
-
-    manager = ContainerManager(Settings())
-    manager._docker = Mock(return_value=CompletedProcess([], 0, "expected-token\n", ""))
-    malicious = io.BytesIO()
-    with zipfile.ZipFile(malicious, "w") as archive:
-        archive.writestr("../outside.txt", "must not escape workspace")
-
-    try:
-        manager.upload("oc-target", "expected-token", malicious.getvalue())
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("archive paths must not escape the target container workspace")
-
-    manager._docker.assert_called_once()
-
-
-def test_container_manager_upload_preserves_previous_project_when_installation_fails(tmp_path, monkeypatch) -> None:
-    import io
-    import subprocess
-    import zipfile
-
-    import src.Features.Opencode.ContainerManager as container_manager_module
-
-    manager = ContainerManager(Settings())
-    manager._docker = Mock(return_value=CompletedProcess([], 0, "expected-token\n", ""))
-    target = tmp_path / "project"
-    target.mkdir()
-    (target / "existing.txt").write_text("previous project")
-    archive = io.BytesIO()
-    with zipfile.ZipFile(archive, "w") as project:
-        project.writestr("replacement.txt", "new project")
-
-    original_run = subprocess.run
-
-    def run_extractor(command, *, input, capture_output, timeout):
-        script = command[command.index("-c") + 1].replace(
-            "pathlib.Path('/workspace/project')", f"pathlib.Path({str(target)!r})"
-        )
-        script = "import os\noriginal_replace = os.replace\ndef fail_install(source, destination):\n    if str(destination) == " + repr(str(target)) + " and pathlib.Path(source).name.startswith('.project-upload-'):\n        raise OSError('simulated install failure')\n    return original_replace(source, destination)\nos.replace = fail_install\n" + script
-        result = original_run(
-            ["python3", "-c", script], input=input, capture_output=capture_output, timeout=timeout,
-        )
-        return CompletedProcess(command, result.returncode, result.stdout, result.stderr)
-
-    monkeypatch.setattr(container_manager_module.subprocess, "run", run_extractor)
-
-    try:
-        manager.upload("oc-target", "expected-token", archive.getvalue())
-    except RuntimeError as error:
-        assert "could not be written" in str(error)
-    else:
-        raise AssertionError("a failed staging installation must fail the upload")
-
-    assert (target / "existing.txt").read_text() == "previous project"
-    assert not (target / "replacement.txt").exists()
 
 
 def test_container_manager_cleans_up_container_when_initialization_times_out() -> None:
