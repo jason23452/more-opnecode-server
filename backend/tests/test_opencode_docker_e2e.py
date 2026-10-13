@@ -1,11 +1,15 @@
 """Opt-in black-box test requiring Docker and outbound Cloudflare access."""
 
 import os
+import fcntl
 import pty
 import select
+import struct
+import termios
 import tempfile
 import subprocess
 import sys
+import threading
 import time
 import uuid
 
@@ -111,6 +115,200 @@ def _assert_tunnel_no_longer_serves(url: str, password: str, timeout: float = 45
             return
         time.sleep(1)
     pytest.fail(f"deleted tunnel continued serving HTTP 200 for {timeout}s (last status: {last_status})")
+
+
+def _start_terminal_output_reader(master_fd: int, process: subprocess.Popen):
+    output = bytearray()
+    open_code_seen = threading.Event()
+
+    def read_output() -> None:
+        while True:
+            readable, _, _ = select.select([master_fd], [], [], 0.1)
+            if not readable:
+                if process.poll() is not None:
+                    return
+                continue
+            try:
+                data = os.read(master_fd, 65536)
+            except OSError:
+                return
+            if not data:
+                return
+            output.extend(data)
+            if b"OpenCode" in output or b"opencode" in output:
+                open_code_seen.set()
+
+    reader = threading.Thread(target=read_output, daemon=True)
+    reader.start()
+    return output, open_code_seen, reader
+
+
+def _pty_size_probe(container_id: str, columns: int, rows: int) -> None:
+    probe = """
+import fcntl, os, struct, sys, termios, time
+expected = (int(sys.argv[1]), int(sys.argv[2]))
+deadline = time.monotonic() + 12
+last = []
+while time.monotonic() < deadline:
+    for entry in os.scandir('/proc'):
+        if not entry.name.isdigit():
+            continue
+        try:
+            command = open(f'/proc/{entry.name}/cmdline', 'rb').read().replace(b'\\0', b' ')
+            if b'opencode' not in command or b' .' not in command:
+                continue
+            fd = os.open(f'/proc/{entry.name}/fd/0', os.O_RDONLY | os.O_NOCTTY)
+            try:
+                height, width, _, _ = struct.unpack('HHHH', fcntl.ioctl(fd, termios.TIOCGWINSZ, b'\\0' * 8))
+            finally:
+                os.close(fd)
+            last.append((width, height, command.decode(errors='replace')))
+            if (width, height) == expected:
+                print(f'{width}x{height}')
+                raise SystemExit(0)
+        except (FileNotFoundError, PermissionError, ProcessLookupError, OSError):
+            continue
+    time.sleep(0.1)
+print(f'expected {expected}, observed {last[-5:]}', file=sys.stderr)
+raise SystemExit(1)
+"""
+    result = subprocess.run(
+        docker_command("exec", container_id, "python3", "-c", probe, str(columns), str(rows)),
+        capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode == 0, (
+        f"remote OpenCode PTY did not report {columns}x{rows}: "
+        f"stdout={result.stdout!r}, stderr={result.stderr!r}"
+    )
+
+
+@pytest.mark.skipif(os.getenv("OPENCODE_TUI_E2E") != "1", reason="requires Docker daemon and Cloudflare Quick Tunnel")
+def test_standalone_tui_tunnel_connect_propagates_size_resize_and_reconnects() -> None:
+    api_port = int(os.getenv("OPENCODE_TUI_E2E_API_PORT", "18082"))
+    admin_token = os.getenv("OPENCODE_ADMIN_TOKEN", "integration-admin-token")
+    env = os.environ | {
+        "OPENCODE_ADMIN_TOKEN": admin_token,
+        "OPENCODE_PASSWORD": os.getenv("OPENCODE_PASSWORD", "integration-opencode-password"),
+        "OPENCODE_IMAGE": f"dynamic-opencode-tui-e2e:{uuid.uuid4().hex[:8]}",
+        "OPENCODE_STARTUP_TIMEOUT": "300",
+        "OPENCODE_MAX_CONTAINERS": "20",
+    }
+    backend = subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "src.App.Main:app", "--host", "127.0.0.1", "--port", str(api_port)],
+        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    base_url = f"http://127.0.0.1:{api_port}"
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    container_id = None
+    connections: list[tuple[subprocess.Popen, int, threading.Thread]] = []
+    try:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            try:
+                if httpx.get(base_url + "/api/health", timeout=1).status_code == 200:
+                    break
+            except httpx.HTTPError:
+                time.sleep(0.25)
+        else:
+            pytest.fail("focused TUI E2E backend did not start within 30 seconds")
+
+        response = httpx.post(base_url + "/api/opencode/containers", headers=headers, timeout=360)
+        assert response.status_code == 201, f"container creation failed: HTTP {response.status_code}: {response.text}"
+        payload = response.json()
+        container_id = payload["id"]
+        assert payload["connect_url"].endswith("/connect") and payload["connect_token"]
+        empty_workdir = subprocess.run(
+            docker_command("exec", container_id, "test", "!", "-e", "/workspace/project"),
+            capture_output=True,
+        )
+        assert empty_workdir.returncode == 0, "focused E2E requires a fresh container without an uploaded project"
+        _probe_external_url(payload["url"], env["OPENCODE_PASSWORD"], timeout=90)
+
+        cli_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../cli"))
+        cli = ["uv", "run", "--quiet", "--project", cli_root, "opencode-project", "connect",
+               "--url", payload["connect_url"], f"--token={payload['connect_token']}"]
+
+        def start_connection(columns: int, rows: int):
+            master, slave = pty.openpty()
+            fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
+            process = subprocess.Popen(cli, stdin=slave, stdout=slave, stderr=slave)
+            os.close(slave)
+            output, visible, reader = _start_terminal_output_reader(master, process)
+            connections.append((process, master, reader))
+            return process, master, output, visible
+
+        retryable_messages = (
+            "已有 TUI 工作階段".encode(),
+            "Tunnel 網路連線失敗".encode(),
+        )
+
+        def connect_until_visible(columns: int, rows: int):
+            deadline = time.monotonic() + 90
+            failures = []
+            while time.monotonic() < deadline:
+                process, master, output, visible = start_connection(columns, rows)
+                visible.wait(timeout=min(40, max(0, deadline - time.monotonic())))
+                if process.poll() is None and visible.is_set():
+                    return process, master, output, visible
+                rendered = bytes(output)
+                failures.append(rendered[-1000:])
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=5)
+                if not any(message in rendered for message in retryable_messages):
+                    pytest.fail(f"TUI connect failed for a non-retryable reason: {rendered[-2000:]!r}")
+                os.close(master)
+                _, _, failed_reader = connections.pop()
+                failed_reader.join(timeout=2)
+                time.sleep(0.5)
+            pytest.fail(f"TUI did not become available after transient Tunnel retries: {failures!r}")
+
+        process, master, output, visible = connect_until_visible(100, 30)
+        workdir_created = subprocess.run(
+            docker_command("exec", container_id, "test", "-d", "/workspace/project"),
+            capture_output=True,
+        )
+        assert workdir_created.returncode == 0, "standalone relay did not create /workspace/project"
+        _pty_size_probe(container_id, 100, 30)
+
+        fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 44, 132, 0, 0))
+        _pty_size_probe(container_id, 132, 44)
+        assert process.poll() is None, "TUI connection exited while applying live terminal resize"
+
+        os.write(master, b"\x03")
+        process.wait(timeout=10)
+        assert process.returncode == 0, f"Ctrl-C disconnect returned {process.returncode}: {bytes(output[-2000:])!r}"
+
+        reconnect, reconnect_master, reconnect_output, reconnect_visible = connect_until_visible(132, 44)
+        _pty_size_probe(container_id, 132, 44)
+        os.write(reconnect_master, b"\x03")
+        reconnect.wait(timeout=10)
+        assert reconnect.returncode == 0, f"reconnected TUI did not disconnect cleanly: {bytes(reconnect_output[-2000:])!r}"
+    finally:
+        for process, master, reader in connections:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+            reader.join(timeout=2)
+            try:
+                os.close(master)
+            except OSError:
+                pass
+        if container_id:
+            try:
+                httpx.delete(base_url + f"/api/opencode/containers/{container_id}", headers=headers, timeout=30)
+            except httpx.HTTPError:
+                subprocess.run(docker_command("rm", "-f", container_id), check=False, capture_output=True)
+        backend.terminate()
+        try:
+            backend.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            backend.kill()
+            backend.wait(timeout=10)
 
 
 @pytest.mark.skipif(os.getenv("OPENCODE_DOCKER_E2E") != "1", reason="requires Docker daemon and Cloudflare Quick Tunnel")
@@ -253,6 +451,7 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
             )
             os.unlink(oversized_file)
             terminal_master, terminal_slave = pty.openpty()
+            fcntl.ioctl(terminal_master, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
             tui_process = subprocess.Popen(
                 [cli_executable, "upload",
                  "--url", payload["upload_url"], f"--token={payload['upload_token']}", "--project", project,
@@ -260,25 +459,21 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
                 stdin=terminal_slave, stdout=terminal_slave, stderr=terminal_slave,
             )
             os.close(terminal_slave)
-            terminal_output = bytearray()
-            deadline = time.monotonic() + 30
-            while time.monotonic() < deadline and tui_process.poll() is None:
-                readable, _, _ = select.select([terminal_master], [], [], 0.2)
-                if readable:
-                    try:
-                        terminal_output.extend(os.read(terminal_master, 65536))
-                    except OSError:
-                        break
-                if b"OpenCode" in terminal_output or b"opencode" in terminal_output:
-                    break
+            terminal_output, tui_visible, terminal_reader = _start_terminal_output_reader(
+                terminal_master, tui_process,
+            )
+            tui_visible.wait(timeout=30)
             assert tui_process.poll() is None, (
                 "upload-then-connect CLI exited before entering remote TUI: "
                 f"{bytes(terminal_output[-4000:])!r}"
             )
-            assert b"OpenCode" in terminal_output or b"opencode" in terminal_output, (
+            assert tui_visible.is_set(), (
                 "remote TUI did not emit identifiable OpenCode output: "
                 f"{bytes(terminal_output[-4000:])!r}"
             )
+            # Exercise a live window change while the authenticated TUI session is active.
+            fcntl.ioctl(terminal_master, termios.TIOCSWINSZ, struct.pack("HHHH", 44, 132, 0, 0))
+            time.sleep(0.5)
             uploaded_during_session = subprocess.run(
                 docker_command("exec", target_id, "cat", "/workspace/project/upload-marker.txt"),
                 capture_output=True, text=True,
@@ -287,6 +482,10 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
                 "one-command upload/connect entered the TUI without the project being present: "
                 f"exit={uploaded_during_session.returncode}, stdout={uploaded_during_session.stdout!r}, "
                 f"stderr={uploaded_during_session.stderr!r}"
+            )
+            assert tui_process.poll() is None, (
+                "remote TUI exited after terminal resize: "
+                f"{bytes(terminal_output[-4000:])!r}"
             )
             busy = subprocess.run(
                 [cli_executable, "connect", "--url", payload["connect_url"],
@@ -298,6 +497,7 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
             )
             os.write(terminal_master, b"\x03")
             tui_process.wait(timeout=10)
+            terminal_reader.join(timeout=2)
             tui_process = None
             os.close(terminal_master)
 
@@ -307,23 +507,17 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
                 stdin=reconnect_slave, stdout=reconnect_slave, stderr=reconnect_slave,
             )
             os.close(reconnect_slave)
-            reconnect_output = bytearray()
-            reconnect_deadline = time.monotonic() + 20
-            while time.monotonic() < reconnect_deadline and reconnect.poll() is None:
-                readable, _, _ = select.select([reconnect_master], [], [], 0.2)
-                if readable:
-                    try:
-                        reconnect_output.extend(os.read(reconnect_master, 65536))
-                    except OSError:
-                        break
-                if b"OpenCode" in reconnect_output or b"opencode" in reconnect_output:
-                    break
-            assert reconnect.poll() is None and (b"OpenCode" in reconnect_output or b"opencode" in reconnect_output), (
+            reconnect_output, reconnect_visible, reconnect_reader = _start_terminal_output_reader(
+                reconnect_master, reconnect,
+            )
+            reconnect_visible.wait(timeout=20)
+            assert reconnect.poll() is None and reconnect_visible.is_set(), (
                 "TUI could not reconnect after the prior session disconnected: "
                 f"exit={reconnect.poll()}, output={bytes(reconnect_output[-4000:])!r}"
             )
             os.write(reconnect_master, b"\x03")
             reconnect.wait(timeout=10)
+            reconnect_reader.join(timeout=2)
             os.close(reconnect_master)
 
         uploaded = subprocess.run(

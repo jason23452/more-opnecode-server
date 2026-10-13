@@ -53,6 +53,7 @@ Status: ready-for-agent
 35. As an OpenCode 使用者, I want 專案上傳與 TUI 連線都只使用容器 Tunnel, so that 本機 CLI 不需要連線至管理後端。
 36. As an 內部管理者, I want Tunnel URL 改變後可透過內網管理 API 取得最新 upload/connect URL, so that 我能重新提供有效的 CLI 命令。
 37. As an OpenCode 使用者, I want 大型專案分塊傳送並在所有區塊驗證完成後才更新工作目錄, so that Tunnel 單次請求大小限制不會阻止上傳或造成半套專案。
+38. As an OpenCode 使用者, I want 遠端 TUI 使用本機終端的實際欄數與列數並在視窗調整時更新, so that TUI 版面能完整顯示且不把終端控制回覆當成 prompt 文字。
 
 ## Implementation Decisions
 
@@ -74,6 +75,7 @@ Status: ready-for-agent
 - Tunnel URL 可能在建立後或傳輸期間改變。管理者可透過內網管理 API 查詢最新 upload/connect URL，並以先前建立回應中的容器專屬 token 重新執行 CLI 命令；CLI 不呼叫管理後端刷新 URL。因 Quick Tunnel URL 會變動，不承諾使用者端自動取得新 URL。
 - 專案資料隨容器存續；移除容器時一併清除，不要求獨立持久化 Docker volume。CLI 只有在全部區塊完成且專案安裝成功後，才可連入該容器的 OpenCode TUI。
 - 本機 CLI 經 Tunnel ingress 連入容器內的互動式 OpenCode TUI；容器端 relay 配置 PTY，每個容器同時僅允許一個 TUI 工作階段。FastAPI 管理後端不執行 Docker exec 來中繼 TUI。
+- CLI 將本機終端初始尺寸與後續 resize 事件作為獨立 WebSocket 控制訊息傳給容器 relay；relay 對 PTY 設定視窗列/欄數並通知 OpenCode TUI 重排版。尺寸控制訊息不得混入鍵盤輸入或顯示為 prompt 文字。
 - 執行環境相容性：Docker Desktop 可在 Windows 上運行，而 WSL 可刻意不安裝 Linux Docker CLI 且不啟用 WSL Integration。後端在 WSL 中若偵測到 `docker.exe`，所有管理 Docker 呼叫須自動使用它；build 的 WSL 絕對路徑須轉成 Docker Desktop 可解析的 Windows 路徑。Tunnel ingress 與容器內接收器處理 upload/TUI 資料流；原生 Linux 環境沿用 `docker`。
 - 以部署設定限制單一容器 CPU、記憶體及同時執行容器數量。
 - 遵循 ADR「使用 Docker OpenCode 容器與 Cloudflare Quick Tunnel」及 ADR「專案檔案經 Tunnel 直接上傳」：使用同主機 Docker、容器內 `cloudflared` 與臨時 Quick Tunnel；接受 URL 可因 Tunnel 重建而改變，並以健康監控及控制 API 查詢最新 upload URL 因應。
@@ -87,6 +89,7 @@ Status: ready-for-agent
 - 分塊上傳驗收需驗證區塊可重試、缺少/損壞區塊不會更新目前工作目錄，全部區塊驗證完成後才安裝專案；測試資料需超過單次 HTTP 請求大小限制。
 - Tunnel URL 變更驗收需使舊 URL 失效，確認管理者可透過內網管理 API 查詢新 upload/connect URL，並以原容器 token 手動重新執行 CLI；確認 CLI 未連線至管理 API，檔案區塊與 TUI 流量仍直接經 Tunnel。
 - 終端連線驗收需確認 CLI 使用 Tunnel URL 而非管理 API URL 進入遠端 OpenCode TUI；上傳完成前不能開始互動，同一容器第二個 TUI 連線受限，並驗證中斷後需手動取得新 URL 才能重新連線。
+- TUI 尺寸驗收需從已知本機終端尺寸建立連線，確認遠端 PTY/TUI 使用相同欄數與列數；調整本機終端尺寸後確認遠端收到 resize 並重排版，Windows Terminal 的終端查詢回覆不可出現在 prompt。
 - Tunnel 復原測試需在測試容器中使目前 Tunnel 失效，確認健康監控會重建 Tunnel、產生可用的新 URL、查詢 API 回傳新 URL，並確認 OpenCode 容器與工作狀態仍保留。多次復原失敗時，確認容器保留且 API 呈現故障狀態。
 - 驗證初始化逾時、資源數量上限、CPU/記憶體設定、未授權管理呼叫及刪除後暫存資料清除等外部行為。
 - 執行上述整合測試需有可用 Docker daemon、容器建置能力、外網連線及 Cloudflare Quick Tunnel 可用性；測試不得依賴固定 URL，應以每次建立或重建實際回傳的 URL 驗證。
