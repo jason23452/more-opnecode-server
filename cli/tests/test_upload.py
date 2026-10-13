@@ -198,6 +198,30 @@ class UploadTests(unittest.TestCase):
             stdin.isatty.return_value = True
             self.assertEqual(connect._terminal_input(), b"okx")
 
+    def test_windows_arrow_key_scan_code_is_buffered_until_next_input_poll(self):
+        import opencode_project.connect as connect
+
+        class FakeMsvcrt:
+            def __init__(self):
+                self.characters = [character for key in ("H", "P", "M", "K")
+                                   for character in ("\xe0", key)]
+                self.availability = iter([True, False, True, False] * 4)
+
+            def kbhit(self):
+                return next(self.availability, False)
+
+            def getwch(self):
+                return self.characters.pop(0)
+
+        fake_stdin = unittest.mock.MagicMock()
+        fake_stdin.isatty.return_value = True
+        with patch.object(connect, "msvcrt", FakeMsvcrt()), \
+                patch.object(connect.sys, "stdin", fake_stdin):
+            for expected in (b"\x1b[A", b"\x1b[B", b"\x1b[C", b"\x1b[D"):
+                with self.subTest(expected=expected):
+                    self.assertEqual(connect._terminal_input(), b"")
+                    self.assertEqual(connect._terminal_input(), expected)
+
     def test_connect_reports_same_known_close_code_message_for_closed_and_failed_connections(self):
         from opencode_project.connect import connect_terminal
 

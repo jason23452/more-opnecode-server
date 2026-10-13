@@ -29,6 +29,7 @@ _TERMINAL_QUERY_REPLIES = re.compile(
     rb"\x1b\[[?>][0-9;]+c|"        # device-attributes report
     rb"\x1b\]10;rgb:[0-9a-fA-F/]+(?:\x07|\x1b\\)"  # foreground-color report
 )
+_PENDING_WINDOWS_KEY_PREFIX = False
 
 
 def _known_close_message(code: int | None) -> str | None:
@@ -48,15 +49,26 @@ def _known_close_message_from_error(error: Exception) -> str | None:
 
 
 def _terminal_input() -> bytes:
+    global _PENDING_WINDOWS_KEY_PREFIX
     if msvcrt and sys.stdin.isatty():
         data = bytearray()
         special_keys = {"H": b"\x1b[A", "P": b"\x1b[B", "M": b"\x1b[C", "K": b"\x1b[D"}
+        if _PENDING_WINDOWS_KEY_PREFIX:
+            if not msvcrt.kbhit():
+                return b""
+            data.extend(special_keys.get(msvcrt.getwch(), b""))
+            _PENDING_WINDOWS_KEY_PREFIX = False
         while msvcrt.kbhit():
             character = msvcrt.getwch()
             if character in ("\x00", "\xe0"):
                 if msvcrt.kbhit():
                     data.extend(special_keys.get(msvcrt.getwch(), b""))
-                continue
+                    continue
+                # Windows may make the extended-key prefix available before
+                # its scan code. Keep the prefix for the next poll instead
+                # of leaking H/P/M/K to the remote TUI as ordinary text.
+                _PENDING_WINDOWS_KEY_PREFIX = True
+                break
             data.extend(character.encode("utf-8", errors="replace"))
         # Windows Terminal sends responses to TUI capability queries through
         # the same console input stream as keystrokes. Do not relay those
@@ -76,6 +88,8 @@ def terminal_size() -> tuple[int, int]:
 
 
 def connect_terminal(url: str, token: str) -> None:
+    global _PENDING_WINDOWS_KEY_PREFIX
+    _PENDING_WINDOWS_KEY_PREFIX = False
     old_settings = None
     if termios and sys.stdin.isatty():
         old_settings = termios.tcgetattr(sys.stdin.fileno())
@@ -124,5 +138,6 @@ def connect_terminal(url: str, token: str) -> None:
         )
         raise RuntimeError(f"遠端 TUI 連線失敗：{message}") from error
     finally:
+        _PENDING_WINDOWS_KEY_PREFIX = False
         if old_settings is not None:
             termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_settings)
