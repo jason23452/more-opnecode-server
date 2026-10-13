@@ -60,6 +60,15 @@ class UploadTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "管理 API.*upload_url.*原容器 upload token"):
                 upload_archive("https://stale.example/upload", "original-token", b"archive", retries=1)
 
+    def test_chunked_upload_failure_uses_same_management_query_guidance(self):
+        import opencode_project.upload as upload
+
+        with patch.multiple(upload, MAX_UPLOAD_BYTES=1, CHUNK_BYTES=3), \
+                patch("opencode_project.upload._request", side_effect=OSError("network unavailable")), \
+                patch("opencode_project.upload.time.sleep"):
+            with self.assertRaisesRegex(RuntimeError, "管理 API.*upload_url.*原容器 upload token"):
+                upload.upload_archive("https://stale.example/upload", "original-token", b"archive", retries=1)
+
     def test_upload_help_does_not_offer_management_refresh_option(self):
         result = subprocess.run(
             [sys.executable, "-m", "opencode_project.cli", "upload", "--help"],
@@ -120,6 +129,32 @@ class UploadTests(unittest.TestCase):
             max_size=None, ping_interval=20,
         )
         self.assertEqual(remote.recv.call_count, 2)
+
+    def test_connect_reports_same_known_close_code_message_for_closed_and_failed_connections(self):
+        from opencode_project.connect import connect_terminal
+
+        expected = {
+            4401: "連線授權無效或已撤銷，請使用最新的容器連線資訊。",
+            4404: "找不到此 OpenCode 容器。",
+            4409: "此容器已有 TUI 工作階段，請稍後重試。",
+        }
+        for code, message in expected.items():
+            with self.subTest(code=code):
+                with patch("opencode_project.connect.websocket_connect", side_effect=RuntimeError(f"closed with code {code}")):
+                    with self.assertRaisesRegex(RuntimeError, message):
+                        connect_terminal("ws://api/connect", "token")
+
+                from websockets.exceptions import ConnectionClosedError
+                from websockets.frames import Close
+
+                closed = ConnectionClosedError(Close(code, "closed"), None)
+                remote = unittest.mock.MagicMock()
+                remote.__enter__.return_value = remote
+                remote.recv.side_effect = closed
+                with patch("opencode_project.connect.websocket_connect", return_value=remote), \
+                        patch("opencode_project.connect._terminal_input", return_value=b""):
+                    with self.assertRaisesRegex(RuntimeError, message):
+                        connect_terminal("ws://api/connect", "token")
 
     def test_upload_then_connect_only_connects_after_successful_upload(self):
         from opencode_project.cli import main
