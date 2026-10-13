@@ -1,6 +1,8 @@
 """Opt-in black-box test requiring Docker and outbound Cloudflare access."""
 
 import os
+import pty
+import select
 import tempfile
 import subprocess
 import sys
@@ -174,14 +176,33 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
                 f"uv tool dir --bin failed: stdout={tool_bin.stdout!r}, stderr={tool_bin.stderr!r}"
             )
             cli_executable = os.path.join(tool_bin.stdout.strip(), "opencode-project")
+            terminal_master, terminal_slave = pty.openpty()
             tui_process = subprocess.Popen(
                 [cli_executable, "upload",
                  "--url", payload["upload_url"], f"--token={payload['upload_token']}", "--project", project,
                  "--connect-url", payload["connect_url"], "--connect-token", payload["connect_token"]],
-                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+                stdin=terminal_slave, stdout=terminal_slave, stderr=terminal_slave,
             )
-            time.sleep(3)
-            assert tui_process.poll() is None, "upload-then-connect CLI exited before entering the remote TUI"
+            os.close(terminal_slave)
+            terminal_output = bytearray()
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and tui_process.poll() is None:
+                readable, _, _ = select.select([terminal_master], [], [], 0.2)
+                if readable:
+                    try:
+                        terminal_output.extend(os.read(terminal_master, 65536))
+                    except OSError:
+                        break
+                if b"OpenCode" in terminal_output or b"opencode" in terminal_output:
+                    break
+            assert tui_process.poll() is None, (
+                "upload-then-connect CLI exited before entering remote TUI: "
+                f"{bytes(terminal_output[-4000:])!r}"
+            )
+            assert b"OpenCode" in terminal_output or b"opencode" in terminal_output, (
+                "remote TUI did not emit identifiable OpenCode output: "
+                f"{bytes(terminal_output[-4000:])!r}"
+            )
             busy = subprocess.run(
                 [cli_executable, "connect", "--url", payload["connect_url"],
                  "--token", payload["connect_token"]],
@@ -190,10 +211,10 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
             assert busy.returncode != 0 and "已有 TUI 工作階段" in busy.stderr, (
                 f"second TUI session was not clearly refused: exit={busy.returncode}, stderr={busy.stderr!r}"
             )
-            tui_process.stdin.write("\x03")
-            tui_process.stdin.flush()
+            os.write(terminal_master, b"\x03")
             tui_process.wait(timeout=10)
             tui_process = None
+            os.close(terminal_master)
 
         uploaded = subprocess.run(
             ["docker", "exec", target_id, "cat", "/workspace/project/upload-marker.txt"],

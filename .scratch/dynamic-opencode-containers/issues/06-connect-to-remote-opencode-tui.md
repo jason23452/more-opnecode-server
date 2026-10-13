@@ -11,4 +11,4 @@
 - [ ] 同一容器同時僅允許一個互動式 TUI 工作階段；其他連線會收到可理解的拒絕或忙碌回饋。
 - [ ] CLI 提供獨立的連線操作，以及先上傳指定專案資料夾再連線的一鍵操作。
 - [ ] 終端連線中斷時可辨識連線狀態並支援重新連線；驗證連線失敗及重新連線行為。
-- [ ] 以本機 CLI、後端連線通道與實際容器驗證 TUI 互動、單一工作階段限制及一鍵上傳連線流程。此項尚未執行：Docker Desktop CLI 回報 `Docker Desktop is unable to start`，需先恢復 Docker Engine。
+- [ ] 以本機 CLI、後端連線通道與實際容器驗證 TUI 互動、單一工作階段限制及一鍵上傳連線流程。待確認：指定 E2E 可建立容器並觀察到候選 TUI 輸出，但第二連線未收到「已有 TUI 工作階段」；`opencode-project connect` 以一般連線中斷訊息退出，stderr 包含 `cannot attach stdin to a TTY-enabled container because stdin is not a terminal`。需釐清首個遠端 TUI 為何結束／忙碌拒絕未生效後重跑此檢查。

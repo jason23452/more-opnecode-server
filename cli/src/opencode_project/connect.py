@@ -59,6 +59,12 @@ def connect_terminal(url: str, token: str) -> None:
     except KeyboardInterrupt:
         print("\n遠端 TUI 連線已中斷。可再次執行 connect 重新連線。", file=sys.stderr)
     except ConnectionClosed as error:
+        if error.rcvd and error.rcvd.code == 4409:
+            raise RuntimeError("此容器已有 TUI 工作階段，請稍後重試。") from error
+        if error.rcvd and error.rcvd.code == 4401:
+            raise RuntimeError("連線授權無效或已撤銷，請使用最新的容器連線資訊。") from error
+        if error.rcvd and error.rcvd.code == 4404:
+            raise RuntimeError("找不到此 OpenCode 容器。") from error
         raise RuntimeError("遠端 TUI 連線中斷，請重新執行 connect 重新連線。") from error
     except Exception as error:
         message = str(error)
