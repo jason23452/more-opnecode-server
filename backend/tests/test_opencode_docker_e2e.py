@@ -163,7 +163,12 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
         assert payload["connect_url"] == payload["url"].replace("https://", "wss://").rstrip("/") + "/connect"
         assert "localhost:8000" not in payload["connect_url"]
         assert payload["connect_token"]
-        assert payload["upload_target_url"].endswith(f"/api/opencode/containers/{target_id}/upload-target")
+        assert "upload_target_url" not in payload
+        removed_refresh = httpx.get(
+            base_url + f"/api/opencode/containers/{target_id}/upload-target",
+            headers={"Authorization": f"Bearer {payload['upload_token']}"}, timeout=10,
+        )
+        assert removed_refresh.status_code == 404, "container upload-token refresh endpoint must be removed"
         assert httpx.put(
             base_url + f"/api/opencode/containers/{target_id}/upload", content=b"must not relay",
             headers={"Authorization": f"Bearer {payload['upload_token']}"}, timeout=10,
@@ -215,10 +220,24 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
             oversized_file = os.path.join(project, "oversized.bin")
             with open(oversized_file, "wb") as source:
                 source.write(os.urandom(96 * 1024 * 1024))
-            large_upload = subprocess.run(
+            stale_large_upload = subprocess.run(
                 [cli_executable, "upload", "--url", "https://stale.invalid/upload",
-                 f"--token={payload['upload_token']}", "--refresh-url", payload["upload_target_url"],
-                 "--project", project],
+                 f"--token={payload['upload_token']}", "--project", project],
+                capture_output=True, text=True, timeout=300,
+            )
+            assert stale_large_upload.returncode != 0, "CLI unexpectedly recovered from a stale Tunnel URL"
+            assert "管理 API" in stale_large_upload.stderr and "upload_url" in stale_large_upload.stderr
+            fresh_container = httpx.get(
+                base_url + f"/api/opencode/containers/{target_id}", headers=headers, timeout=20,
+            )
+            assert fresh_container.status_code == 200, fresh_container.text
+            fresh_targets = fresh_container.json()
+            assert fresh_targets["upload_url"] == payload["upload_url"]
+            assert fresh_targets["connect_url"] == payload["connect_url"]
+            assert "upload_token" not in fresh_container.text and "connect_token" not in fresh_container.text
+            large_upload = subprocess.run(
+                [cli_executable, "upload", "--url", fresh_targets["upload_url"],
+                 f"--token={payload['upload_token']}", "--project", project],
                 capture_output=True, text=True, timeout=300,
             )
             assert large_upload.returncode == 0, (
@@ -397,6 +416,7 @@ def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
         assert "url" in payload
         assert payload["upload_token"]
         assert payload["upload_url"] == payload["url"].rstrip("/") + "/upload"
+        assert "upload_target_url" not in payload
         assert password not in response.text
         reachable = _probe_external_url(payload["url"], password)
         assert reachable.status_code == 200
@@ -447,9 +467,15 @@ def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
         listed_container = next(container for container in listed.json() if container["id"] == payload["id"])
         assert listed_container["status"] == "healthy"
         assert listed_container["url"] == payload["url"]
+        assert listed_container["upload_url"] == payload["upload_url"]
+        assert listed_container["connect_url"] == payload["connect_url"]
+        assert "upload_token" not in str(listed_container) and "connect_token" not in str(listed_container)
         queried = httpx.get(base_url + f"/api/opencode/containers/{container_id}", headers=headers, timeout=20)
         assert queried.status_code == 200, queried.text
         assert queried.json()["url"] == payload["url"]
+        assert queried.json()["upload_url"] == payload["upload_url"]
+        assert queried.json()["connect_url"] == payload["connect_url"]
+        assert "upload_token" not in queried.text and "connect_token" not in queried.text
 
         marker = f"tunnel-recovery-{uuid.uuid4().hex}"
         subprocess.run(docker_command("exec", container_id, "sh", "-c", f"printf '%s' '{marker}' >/tmp/opencode-retention-marker"), check=True)

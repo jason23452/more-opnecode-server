@@ -65,7 +65,10 @@ def connect_terminal(url: str, token: str) -> None:
             raise RuntimeError("連線授權無效或已撤銷，請使用最新的容器連線資訊。") from error
         if error.rcvd and error.rcvd.code == 4404:
             raise RuntimeError("找不到此 OpenCode 容器。") from error
-        raise RuntimeError("遠端 TUI 連線中斷，請重新執行 connect 重新連線。") from error
+        raise RuntimeError(
+            "遠端 TUI Tunnel 連線中斷。請透過管理 API 重新查詢目前的 connect_url，"
+            "並使用原容器 connect token 重新執行 connect。"
+        ) from error
     except Exception as error:
         message = str(error)
         if "4401" in message:
@@ -74,6 +77,11 @@ def connect_terminal(url: str, token: str) -> None:
             message = "此容器已有 TUI 工作階段，請稍後重試。"
         elif "4404" in message:
             message = "找不到此 OpenCode 容器。"
+        else:
+            message = (
+                "Tunnel 網路連線失敗。請透過管理 API 重新查詢目前的 connect_url，"
+                "並使用原容器 connect token 重新執行 connect。"
+            )
         raise RuntimeError(f"遠端 TUI 連線失敗：{message}") from error
     finally:
         if old_settings is not None:

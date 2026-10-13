@@ -67,33 +67,23 @@ def _request(url: str, token: str, data: bytes | None = None, method: str = "GET
         return response.read()
 
 
-def _refresh_target(refresh_url: str, token: str) -> str:
-    payload = json.loads(_request(refresh_url, token))
-    target = payload.get("upload_url")
-    if not isinstance(target, str) or not target.startswith(("https://", "http://")):
-        raise RuntimeError("Tunnel upload target refresh returned an invalid URL")
-    return target.removesuffix("/upload")
-
-
-def _retry_request(operation, retries: int, refresh_url: str | None, token: str, current_url: str) -> tuple[bytes, str]:
+def _retry_request(operation, retries: int, current_url: str) -> bytes:
     last_error: Exception | None = None
     for attempt in range(max(1, retries)):
         try:
-            return operation(current_url), current_url
+            return operation(current_url)
         except (OSError, URLError, HTTPError, RuntimeError, ValueError) as error:
             last_error = error
             if attempt + 1 >= retries:
                 break
-            if refresh_url:
-                try:
-                    current_url = _refresh_target(refresh_url, token)
-                except (OSError, URLError, HTTPError, ValueError, RuntimeError) as refresh_error:
-                    last_error = refresh_error
             time.sleep(min(2 ** attempt, 8))
-    raise RuntimeError(f"上傳失敗，請再次執行相同命令重試：{last_error}") from last_error
+    raise RuntimeError(
+        f"Tunnel 上傳失敗：{last_error}。請透過管理 API 重新查詢目前的 upload_url，"
+        "並使用原容器 upload token 重新執行上傳命令。"
+    ) from last_error
 
 
-def upload_archive(url: str, token: str, archive: bytes | Path, retries: int = 3, refresh_url: str | None = None) -> None:
+def upload_archive(url: str, token: str, archive: bytes | Path, retries: int = 3) -> None:
     archive_path = archive if isinstance(archive, Path) else None
     size = archive_path.stat().st_size if archive_path else len(archive)
     if size > 2 * 1024**3:
@@ -109,24 +99,24 @@ def upload_archive(url: str, token: str, archive: bytes | Path, retries: int = 3
             digest.update(archive)
         metadata = json.dumps(asdict(UploadMetadata(uuid.uuid4().hex, size, (size + CHUNK_BYTES - 1) // CHUNK_BYTES,
                                                      digest.hexdigest()))).encode()
-        response, current_url = _retry_request(
+        response = _retry_request(
             lambda target: _request(target + "/upload/sessions", token, metadata, "POST", {"Content-Type": "application/json"}),
-            retries, refresh_url, token, current_url,
+            retries, current_url,
         )
         session = json.loads(response)["session_id"]
         with archive_path.open("rb") if archive_path else __import__("io").BytesIO(archive) as source:
             for index in range((size + CHUNK_BYTES - 1) // CHUNK_BYTES):
                 chunk = source.read(CHUNK_BYTES)
                 chunk_digest = hashlib.sha256(chunk).hexdigest()
-                _, current_url = _retry_request(
+                _retry_request(
                     lambda target, i=index, part=chunk, sha=chunk_digest: _request(
                         f"{target}/upload/sessions/{session}/chunks/{i}", token, part, "PUT",
                         {"Content-Type": "application/octet-stream", "X-Chunk-SHA256": sha}),
-                    retries, refresh_url, token, current_url,
+                    retries, current_url,
                 )
         _retry_request(
             lambda target: _request(target + f"/upload/sessions/{session}/finalize", token, b"", "POST"),
-            retries, refresh_url, token, current_url,
+            retries, current_url,
         )
         return
     last_error: Exception | None = None
@@ -145,4 +135,7 @@ def upload_archive(url: str, token: str, archive: bytes | Path, retries: int = 3
             last_error = error
             if attempt + 1 < retries:
                 time.sleep(min(2 ** attempt, 8))
-    raise RuntimeError(f"上傳失敗，請再次執行相同命令重試：{last_error}") from last_error
+    raise RuntimeError(
+        f"Tunnel 上傳失敗：{last_error}。請透過管理 API 重新查詢目前的 upload_url，"
+        "並使用原容器 upload token 重新執行上傳命令。"
+    ) from last_error

@@ -18,7 +18,6 @@ class ContainerCreated(BaseModel):
     id: str
     url: str
     upload_url: str
-    upload_target_url: str
     upload_token: str
     cli_install_commands: dict[str, str]
     upload_command: str
@@ -31,6 +30,21 @@ class ContainerStatus(BaseModel):
     id: str
     status: Literal["healthy", "unhealthy"]
     url: str
+    upload_url: str
+    connect_url: str
+
+
+def _tunnel_targets(url: str) -> tuple[str, str]:
+    base = url.rstrip("/")
+    if not base:
+        return "", ""
+    websocket_scheme = "wss" if base.startswith("https://") else "ws"
+    return base + "/upload", websocket_scheme + "://" + base.split("://", 1)[1] + "/connect"
+
+
+def _container_status(container: dict[str, str]) -> ContainerStatus:
+    upload_url, connect_url = _tunnel_targets(container["url"])
+    return ContainerStatus(**container, upload_url=upload_url, connect_url=connect_url)
 
 
 def _authorize(request: Request, credentials: HTTPAuthorizationCredentials | None) -> None:
@@ -80,17 +94,10 @@ def create_container(
             request.app.state.settings.opencode_cli_release_url
         ),
         upload_url=result["url"].rstrip("/") + "/upload",
-        upload_target_url=(
-            ("https" if request.url.scheme == "https" else "http") + "://" + request.url.netloc
-            + f"{request.app.state.settings.api_prefix}/opencode/containers/{result['id']}/upload-target"
-        ),
         upload_command=(
             "opencode-project upload --url "
             + result["url"].rstrip("/") + "/upload"
-            + f" --token={result['upload_token']} --refresh-url="
-            + (("https" if request.url.scheme == "https" else "http") + "://" + request.url.netloc
-               + f"{request.app.state.settings.api_prefix}/opencode/containers/{result['id']}/upload-target")
-            + " --project ."
+            + f" --token={result['upload_token']} --project ."
         ),
         connect_url=("wss" if result["url"].startswith("https://") else "ws")
         + "://" + result["url"].split("://", 1)[1].rstrip("/") + "/connect",
@@ -104,22 +111,6 @@ def create_container(
     )
 
 
-@router.get("/{container_id}/upload-target")
-def get_upload_target(
-    container_id: str,
-    request: Request,
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-) -> dict[str, str]:
-    token = credentials.credentials if credentials else ""
-    try:
-        target = request.app.state.container_manager.upload_target(container_id, token)
-    except PermissionError as error:
-        raise HTTPException(status_code=401, detail="Invalid container upload token") from error
-    if target is None:
-        raise HTTPException(status_code=404, detail="Container upload target not found")
-    return {"upload_url": target + "/upload"}
-
-
 @router.get("", response_model=list[ContainerStatus])
 def list_containers(
     request: Request,
@@ -127,7 +118,7 @@ def list_containers(
 ) -> list[ContainerStatus]:
     _authorize(request, credentials)
     try:
-        return [ContainerStatus(**container) for container in request.app.state.container_manager.list()]
+        return [_container_status(container) for container in request.app.state.container_manager.list()]
     except Exception as error:
         raise _service_unavailable("Failed to list OpenCode containers") from error
 
@@ -145,7 +136,7 @@ def get_container(
         raise _service_unavailable("Failed to retrieve OpenCode container %s", container_id) from error
     if container is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Container not found")
-    return ContainerStatus(**container)
+    return _container_status(container)
 
 
 @router.delete("/{container_id}", status_code=204)

@@ -73,14 +73,13 @@ def test_create_opencode_waits_for_ready_container_and_hides_password() -> None:
     assert response.json() == {
         "id": "oc-123", "url": "https://quiet-fox.trycloudflare.com",
         "upload_url": "https://quiet-fox.trycloudflare.com/upload",
-        "upload_target_url": "http://testserver/api/opencode/containers/oc-123/upload-target",
         "upload_token": "container-upload-token",
         "cli_install_commands": {
             "windows_powershell": "$env:OPENCODE_PROJECT_RELEASE_URL = 'https://github.com/jason23452/more-opnecode-server/releases/latest/download'; irm 'https://github.com/jason23452/more-opnecode-server/releases/latest/download/install.ps1' | iex",
             "macos": "curl -fsSL 'https://github.com/jason23452/more-opnecode-server/releases/latest/download/install.sh' | OPENCODE_PROJECT_RELEASE_URL='https://github.com/jason23452/more-opnecode-server/releases/latest/download' sh",
             "linux": "curl -fsSL 'https://github.com/jason23452/more-opnecode-server/releases/latest/download/install.sh' | OPENCODE_PROJECT_RELEASE_URL='https://github.com/jason23452/more-opnecode-server/releases/latest/download' sh",
         },
-        "upload_command": "opencode-project upload --url https://quiet-fox.trycloudflare.com/upload --token=container-upload-token --refresh-url=http://testserver/api/opencode/containers/oc-123/upload-target --project .",
+        "upload_command": "opencode-project upload --url https://quiet-fox.trycloudflare.com/upload --token=container-upload-token --project .",
         "connect_url": "wss://quiet-fox.trycloudflare.com/connect",
         "connect_token": "container-connect-token",
         "connect_command": "opencode-project connect --url wss://quiet-fox.trycloudflare.com/connect --token=container-connect-token",
@@ -119,21 +118,13 @@ def test_create_opencode_uses_configured_cli_release_url() -> None:
     }
 
 
-def test_upload_target_control_endpoint_requires_container_token_and_returns_only_target() -> None:
+def test_upload_target_control_endpoint_is_removed() -> None:
     manager = Mock(spec=ContainerManager)
-    manager.upload_target.side_effect = PermissionError("invalid upload token")
     app.state.container_manager = manager
     app.state.settings = Settings()
-    denied = client.get("/api/opencode/containers/oc-123/upload-target", headers={"Authorization": "Bearer wrong"})
-    assert denied.status_code == 401
-    manager.upload_target.side_effect = None
-    manager.upload_target.return_value = "https://fresh.trycloudflare.com"
-
-    response = client.get("/api/opencode/containers/oc-123/upload-target", headers={"Authorization": "Bearer upload-token"})
-
-    assert response.status_code == 200
-    assert response.json() == {"upload_url": "https://fresh.trycloudflare.com/upload"}
-    manager.upload_target.assert_called_with("oc-123", "upload-token")
+    response = client.get("/api/opencode/containers/oc-123/upload-target")
+    assert response.status_code == 404
+    assert not hasattr(manager, "upload_target")
 
 
 def test_management_api_does_not_expose_a_tui_websocket_relay() -> None:
@@ -159,7 +150,7 @@ def test_create_opencode_upload_command_passes_leading_dash_token_safely() -> No
     assert response.status_code == 201
     assert response.json()["upload_command"] == (
         "opencode-project upload --url https://quiet-fox.trycloudflare.com/upload "
-        "--token=-token-starting-with-dash --refresh-url=http://testserver/api/opencode/containers/oc-123/upload-target --project ."
+        "--token=-token-starting-with-dash --project ."
     )
 
 
@@ -437,6 +428,8 @@ def test_create_then_immediate_list_keeps_initialized_tunnel_healthy() -> None:
     assert listed.status_code == 200
     assert listed.json() == [{
         "id": "new-container", "status": "healthy", "url": "https://new.trycloudflare.com",
+        "upload_url": "https://new.trycloudflare.com/upload",
+        "connect_url": "wss://new.trycloudflare.com/connect",
     }]
     assert manager._healthy.call_count == 1
 
@@ -612,16 +605,17 @@ def test_list_opencode_containers_returns_current_status_and_tunnel_url() -> Non
     response = client.get("/api/opencode/containers", headers={"Authorization": "Bearer admin-secret"})
 
     assert response.status_code == 200
-    assert response.json() == [
-        {"id": "oc-123", "status": "healthy", "url": "https://quiet-fox.trycloudflare.com"}
-    ]
+    assert response.json() == [{
+        "id": "oc-123", "status": "healthy", "url": "https://quiet-fox.trycloudflare.com",
+        "upload_url": "https://quiet-fox.trycloudflare.com/upload",
+        "connect_url": "wss://quiet-fox.trycloudflare.com/connect",
+    }]
+    assert "upload_token" not in response.text and "connect_token" not in response.text
 
 
 def test_get_opencode_container_returns_current_status_and_tunnel_url() -> None:
     manager = Mock(spec=ContainerManager)
-    manager.get.return_value = {
-        "id": "oc-123", "status": "unhealthy", "url": "https://new-fox.trycloudflare.com"
-    }
+    manager.get.return_value = {"id": "oc-123", "status": "unhealthy", "url": "https://new-fox.trycloudflare.com"}
     app.state.container_manager = manager
     app.state.settings = Settings(opencode_password="shared-secret", opencode_admin_token="admin-secret")
 
@@ -631,8 +625,11 @@ def test_get_opencode_container_returns_current_status_and_tunnel_url() -> None:
 
     assert response.status_code == 200
     assert response.json() == {
-        "id": "oc-123", "status": "unhealthy", "url": "https://new-fox.trycloudflare.com"
+        "id": "oc-123", "status": "unhealthy", "url": "https://new-fox.trycloudflare.com",
+        "upload_url": "https://new-fox.trycloudflare.com/upload",
+        "connect_url": "wss://new-fox.trycloudflare.com/connect",
     }
+    assert "upload_token" not in response.text and "connect_token" not in response.text
 
 
 def test_get_opencode_container_returns_not_found_for_unknown_id() -> None:
