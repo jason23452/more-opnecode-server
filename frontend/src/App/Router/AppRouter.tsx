@@ -1,9 +1,11 @@
-import { createBrowserRouter } from 'react-router-dom'
-import { HomePage } from '@/Features/Home/Pages/HomePage'
+import { Route, Routes } from 'react-router-dom'
+import { ContainerDashboard } from '@/Features/Containers/Pages/ContainerDashboard'
 
-export const AppRouter = createBrowserRouter([
-  {
-    path: '/',
-    element: <HomePage />,
-  },
-])
+export function AppRouter() {
+  return (
+    <Routes>
+      <Route path="/" element={<ContainerDashboard />} />
+      <Route path="/containers/create" element={<ContainerDashboard />} />
+    </Routes>
+  )
+}
