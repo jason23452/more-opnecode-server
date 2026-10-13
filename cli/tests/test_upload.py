@@ -126,9 +126,26 @@ class UploadTests(unittest.TestCase):
             connect_terminal("ws://api/connect", "scoped-token")
         connector.assert_called_once_with(
             "ws://api/connect", additional_headers={"Authorization": "Bearer scoped-token"},
-            max_size=None, ping_interval=20,
+            max_size=None, ping_interval=20, close_timeout=2,
         )
         self.assertEqual(remote.recv.call_count, 2)
+
+    def test_connect_sends_initial_size_and_only_changed_sizes_as_text_controls(self):
+        import opencode_project.connect as connect
+
+        remote = unittest.mock.MagicMock()
+        remote.__enter__.return_value = remote
+        sizes = iter([(100, 30), (100, 30), (120, 40)])
+        remote.recv.side_effect = [TimeoutError(), TimeoutError(), KeyboardInterrupt()]
+        with patch.object(connect, "terminal_size", side_effect=lambda: next(sizes)), \
+                patch.object(connect, "websocket_connect", return_value=remote), \
+                patch.object(connect, "_terminal_input", return_value=b""):
+            connect.connect_terminal("ws://api/connect", "scoped-token")
+
+        self.assertEqual(remote.send.call_args_list, [
+            unittest.mock.call('{"type":"resize","columns":100,"rows":30}'),
+            unittest.mock.call('{"type":"resize","columns":120,"rows":40}'),
+        ])
 
     def test_windows_terminal_query_replies_are_batched_into_one_websocket_frame(self):
         import opencode_project.connect as connect
@@ -158,7 +175,7 @@ class UploadTests(unittest.TestCase):
                 patch.object(connect, "websocket_connect", return_value=remote):
             connect.connect_terminal("ws://tunnel.example/connect", "scoped-token")
 
-        remote.send.assert_called_once_with(query_reply.encode("utf-8"))
+        self.assertIn(unittest.mock.call(query_reply.encode("utf-8")), remote.send.call_args_list)
 
     def test_connect_reports_same_known_close_code_message_for_closed_and_failed_connections(self):
         from opencode_project.connect import connect_terminal
