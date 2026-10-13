@@ -20,6 +20,10 @@ export function ContainerDashboard() {
   const [commandLoading, setCommandLoading] = useState<Record<string, boolean>>({})
   const [commandErrors, setCommandErrors] = useState<Record<string, string>>({})
   const [copiedContainer, setCopiedContainer] = useState('')
+  const [deleteError, setDeleteError] = useState('')
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [deleteInProgress, setDeleteInProgress] = useState(false)
+  const [deleteSuccess, setDeleteSuccess] = useState('')
 
   const loadContainers = useCallback(async () => {
     if (!token.trim() || loading) return
@@ -94,6 +98,26 @@ export function ContainerDashboard() {
     }
   }
 
+  const deleteContainer = async () => {
+    if (!deletingId || !token.trim() || deleteInProgress) return
+    const containerId = deletingId
+    setDeleteInProgress(true)
+    setDeleteError('')
+    setDeleteSuccess('')
+    try {
+      await containerApi.delete(token.trim(), containerId)
+      setContainers((current) => current.filter((container) => container.id !== containerId))
+      setDeleteSuccess(`容器 ${containerId} 已刪除。`)
+      setDeletingId(null)
+    } catch (cause) {
+      const status = cause instanceof ApiError ? cause.status : undefined
+      setDeleteError(status === 401 ? '管理 token 無效，請確認後重試。' : `刪除容器 ${containerId} 失敗，請稍後重試。`)
+      setDeletingId(null)
+    } finally {
+      setDeleteInProgress(false)
+    }
+  }
+
   return (
     <main className="min-h-screen bg-zinc-950 px-6 py-8 text-zinc-100 sm:px-10">
       <div className="mx-auto max-w-5xl">
@@ -151,6 +175,8 @@ export function ContainerDashboard() {
                 </button>
               </div>
               {error && <p className="mb-4 rounded-lg border border-red-800 bg-red-950/50 p-3 text-red-200" role="alert">{error}</p>}
+              {deleteError && <p className="mb-4 rounded-lg border border-red-800 bg-red-950/50 p-3 text-red-200" role="alert">{deleteError}</p>}
+              {deleteSuccess && <p className="mb-4 rounded-lg border border-emerald-800 bg-emerald-950/50 p-3 text-emerald-200" role="status">{deleteSuccess}</p>}
               {loading && !hasLoaded && <p role="status">正在載入容器清單…</p>}
               {!loading && hasLoaded && containers.length === 0 && (
                 <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-6">
@@ -194,9 +220,29 @@ export function ContainerDashboard() {
                           )}
                         </div>
                       )}
+                      <button
+                        className="ml-4 rounded-lg border border-red-800 px-3 py-1 text-red-300 disabled:opacity-50"
+                        disabled={deleteInProgress}
+                        onClick={() => { setDeleteError(''); setDeletingId(container.id) }}
+                        type="button"
+                      >
+                        刪除容器 {container.id}
+                      </button>
                     </li>
                   ))}
                 </ul>
+              )}
+              {deletingId && (
+                <div aria-label={`確認刪除容器 ${deletingId}`} aria-modal="true" className="fixed inset-0 z-10 flex items-center justify-center bg-black/70 p-6" role="alertdialog">
+                  <div className="max-w-lg rounded-xl border border-zinc-700 bg-zinc-900 p-6 shadow-xl">
+                    <h2 className="text-xl font-semibold">確認刪除容器 {deletingId}？</h2>
+                    <p className="mt-3">刪除會強制停止並移除容器，且永久清除容器工作資料。此操作無法復原。</p>
+                    <div className="mt-6 flex justify-end gap-3">
+                      <button className="rounded-lg border border-zinc-700 px-4 py-2 disabled:opacity-50" disabled={deleteInProgress} onClick={() => setDeletingId(null)} type="button">取消刪除</button>
+                      <button className="rounded-lg bg-red-700 px-4 py-2 disabled:opacity-50" disabled={deleteInProgress} onClick={deleteContainer} type="button">{deleteInProgress ? '刪除中…' : '確認刪除'}</button>
+                    </div>
+                  </div>
+                </div>
               )}
             </section>
           </>

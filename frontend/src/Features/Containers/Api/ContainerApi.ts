@@ -38,4 +38,7 @@ export const containerApi = {
       params: { environment },
       headers: { Authorization: `Bearer ${token}` },
     }),
+  delete: (token: string, containerId: string) => api.delete<void>(`/opencode/containers/${encodeURIComponent(containerId)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  }),
 }

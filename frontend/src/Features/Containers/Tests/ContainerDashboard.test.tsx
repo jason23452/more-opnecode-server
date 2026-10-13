@@ -161,6 +161,88 @@ describe('容器管理 Dashboard', () => {
     expect(await screen.findByText('retried-id')).toBeInTheDocument()
   })
 
+  it('取消刪除確認不送出 DELETE 且保留容器', async () => {
+    let deleteRequests = 0
+    server.use(
+      http.get('*/opencode/containers', () => HttpResponse.json([
+        { id: 'keep-me', status: 'healthy', url: 'https://keep.example' },
+      ])),
+      http.delete('*/opencode/containers/:id', () => {
+        deleteRequests += 1
+        return new HttpResponse(null, { status: 204 })
+      }),
+    )
+    render(<MainApp />)
+    await userEvent.type(screen.getByLabelText('管理 token'), 'secret-token')
+    await userEvent.click(screen.getByRole('button', { name: '載入容器清單' }))
+    expect(await screen.findByText('keep-me')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: '刪除容器 keep-me' }))
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('強制停止並移除容器')
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('永久清除容器工作資料')
+    await userEvent.click(screen.getByRole('button', { name: '取消刪除' }))
+
+    expect(deleteRequests).toBe(0)
+    expect(screen.getByText('keep-me')).toBeInTheDocument()
+  })
+
+  it('確認刪除使用 Bearer token、避免重複送出並從清單移除', async () => {
+    let deleteRequests = 0
+    let finishDelete: (() => void) | undefined
+    server.use(
+      http.get('*/opencode/containers', () => HttpResponse.json([
+        { id: 'remove-me', status: 'healthy', url: 'https://remove.example' },
+        { id: 'keep-me', status: 'unhealthy', url: 'https://keep.example' },
+      ])),
+      http.delete('*/opencode/containers/:id', async ({ request, params }) => {
+        deleteRequests += 1
+        expect(params.id).toBe('remove-me')
+        expect(request.headers.get('authorization')).toBe('Bearer secret-token')
+        await new Promise<void>((resolve) => { finishDelete = resolve })
+        return new HttpResponse(null, { status: 204 })
+      }),
+    )
+    render(<MainApp />)
+    await userEvent.type(screen.getByLabelText('管理 token'), 'secret-token')
+    await userEvent.click(screen.getByRole('button', { name: '載入容器清單' }))
+    expect(await screen.findByText('remove-me')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '刪除容器 remove-me' }))
+    await userEvent.click(screen.getByRole('button', { name: '確認刪除' }))
+
+    expect(await screen.findByRole('button', { name: '刪除中…' })).toBeDisabled()
+    expect(deleteRequests).toBe(1)
+    finishDelete?.()
+    expect(await screen.findByRole('status')).toHaveTextContent('容器 remove-me 已刪除')
+    expect(screen.queryByText('remove-me')).not.toBeInTheDocument()
+    expect(screen.getByText('keep-me')).toBeInTheDocument()
+  })
+
+  it('刪除失敗時保留容器，並對 401 顯示管理 token 無效提示', async () => {
+    let status = 500
+    server.use(
+      http.get('*/opencode/containers', () => HttpResponse.json([
+        { id: 'cannot-delete', status: 'healthy', url: 'https://cannot.example' },
+      ])),
+      http.delete('*/opencode/containers/:id', () => HttpResponse.json({ detail: 'failed' }, { status })),
+    )
+    render(<MainApp />)
+    await userEvent.type(screen.getByLabelText('管理 token'), 'secret-token')
+    await userEvent.click(screen.getByRole('button', { name: '載入容器清單' }))
+    expect(await screen.findByText('cannot-delete')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: '刪除容器 cannot-delete' }))
+    await userEvent.click(screen.getByRole('button', { name: '確認刪除' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('刪除容器 cannot-delete 失敗')
+    expect(screen.getByText('cannot-delete')).toBeInTheDocument()
+
+    status = 401
+    await userEvent.click(screen.getByRole('button', { name: '刪除容器 cannot-delete' }))
+    await userEvent.click(screen.getByRole('button', { name: '確認刪除' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('管理 token 無效')
+    expect(screen.getByLabelText('管理 token')).toHaveValue('secret-token')
+    expect(screen.getByText('cannot-delete')).toBeInTheDocument()
+  })
+
   it('建立容器時使用 Bearer token，顯示完整回應並更新容器清單', async () => {
     window.history.replaceState({}, '', '/containers/create')
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => undefined } })
