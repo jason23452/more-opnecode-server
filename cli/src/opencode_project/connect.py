@@ -37,14 +37,16 @@ def _known_close_message_from_error(error: Exception) -> str | None:
 
 def _terminal_input() -> bytes:
     if msvcrt and sys.stdin.isatty():
-        if not msvcrt.kbhit():
-            return b""
-        character = msvcrt.getwch()
-        if character in ("\x00", "\xe0") and msvcrt.kbhit():
-            return {"H": b"\x1b[A", "P": b"\x1b[B", "M": b"\x1b[C", "K": b"\x1b[D"}.get(
-                msvcrt.getwch(), b""
-            )
-        return character.encode("utf-8", errors="replace")
+        data = bytearray()
+        special_keys = {"H": b"\x1b[A", "P": b"\x1b[B", "M": b"\x1b[C", "K": b"\x1b[D"}
+        while msvcrt.kbhit():
+            character = msvcrt.getwch()
+            if character in ("\x00", "\xe0"):
+                if msvcrt.kbhit():
+                    data.extend(special_keys.get(msvcrt.getwch(), b""))
+                continue
+            data.extend(character.encode("utf-8", errors="replace"))
+        return bytes(data)
     readable, _, _ = select.select([sys.stdin], [], [], 0.05)
     return sys.stdin.buffer.read1(4096) if readable else b""
 

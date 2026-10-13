@@ -130,6 +130,36 @@ class UploadTests(unittest.TestCase):
         )
         self.assertEqual(remote.recv.call_count, 2)
 
+    def test_windows_terminal_query_replies_are_batched_into_one_websocket_frame(self):
+        import opencode_project.connect as connect
+
+        query_reply = "\x1b[?2026;2$y"
+
+        class FakeMsvcrt:
+            def __init__(self):
+                self.characters = list(query_reply)
+
+            def kbhit(self):
+                return bool(self.characters)
+
+            def getwch(self):
+                return self.characters.pop(0)
+
+        class FakeStdin:
+            def isatty(self):
+                return True
+
+        remote = unittest.mock.MagicMock()
+        remote.__enter__.return_value = remote
+        remote.recv.side_effect = KeyboardInterrupt()
+        with patch.object(connect, "msvcrt", FakeMsvcrt()), \
+                patch.object(connect, "termios", None), \
+                patch.object(connect.sys, "stdin", FakeStdin()), \
+                patch.object(connect, "websocket_connect", return_value=remote):
+            connect.connect_terminal("ws://tunnel.example/connect", "scoped-token")
+
+        remote.send.assert_called_once_with(query_reply.encode("utf-8"))
+
     def test_connect_reports_same_known_close_code_message_for_closed_and_failed_connections(self):
         from opencode_project.connect import connect_terminal
 
