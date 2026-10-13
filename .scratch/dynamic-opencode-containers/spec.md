@@ -4,13 +4,15 @@ Status: ready-for-agent
 
 ## Problem Statement
 
-使用者目前無法透過後端 API 動態取得一個已準備好的 OpenCode 執行環境，也沒有可持續確認及恢復其 Cloudflare Tunnel 的管理能力。手動建立環境、確認 OpenCode 服務可連線、處理 Tunnel 中斷及清理資源都需要額外操作；Tunnel URL 改變時，呼叫者也無法可靠取得最新網址。
+使用者目前無法透過後端 API 動態取得一個已準備好的 OpenCode 執行環境，也沒有可持續確認及恢復其 Cloudflare Tunnel 的管理能力。手動建立環境、確認 OpenCode 服務可連線、處理 Tunnel 中斷及清理資源都需要額外操作；Tunnel URL 改變時，呼叫者也無法可靠取得最新網址。使用者也無法從本機將 project folder 傳入遠端容器，或透過本機終端互動操作容器內的 OpenCode TUI。
 
 ## Solution
 
 提供一組僅供內部管理者使用的後端 API，建立、列出、查詢及刪除固定規格的 OpenCode 容器。建立 API 等待容器內 OpenCode 服務與 Cloudflare Quick Tunnel 就緒後，回傳容器識別碼及 Tunnel URL。服務透過 `4096` port 對外提供；Tunnel 由容器內的 `cloudflared` 建立。
 
 後端持續透過 Tunnel URL 健康探測 OpenCode 服務，必要時自動重建 Tunnel 並更新 URL。若復原失敗，保留容器並回報故障狀態。部署設定提供 OpenCode 共用密碼與資源/監控限制。驗證以實際 Docker、後端 API、Cloudflare Quick Tunnel 及外部 HTTP 探測進行黑箱整合測試。
+
+建立容器後，API 另提供該容器專屬的 CLI 上傳與連線資訊。使用者在本機執行獨立安裝的專案 CLI，將指定資料夾上傳至單一容器，並透過本機終端連入該容器的 OpenCode TUI；管理者以多次單容器 API 呼叫建立多台互相隔離的 OpenCode 執行環境。
 
 ## User Stories
 
@@ -40,6 +42,13 @@ Status: ready-for-agent
 24. As a 系統管理者, I want 設定初始化逾時、健康探測週期、連續失敗門檻與重試策略, so that 我能依部署環境調整容錯與資源使用。
 25. As an 內部管理者, I want 建立、列表、查詢與刪除 API 僅供可信任內部管理者呼叫, so that 未授權呼叫者不能建立或控制容器。
 26. As a 維護者, I want 透過真實 Docker 與 Cloudflare Tunnel 執行整合驗證, so that 我能確認 API 建立的環境能在實際部署依賴下成功運作。
+27. As an 內部管理者, I want 建立容器後取得該容器專屬的 CLI 上傳與連線資訊, so that 我能從本機將專案送入容器並進入其 OpenCode TUI。
+28. As an OpenCode 使用者, I want 使用本機專案 CLI 指定一個 project folder 並上傳至指定容器, so that 我不需要在本機安裝或執行 OpenCode。
+29. As an OpenCode 使用者, I want 上傳成功後透過本機終端互動使用容器內的 OpenCode TUI, so that 開發工作實際由遠端 OpenCode 執行。
+30. As an OpenCode 使用者, I want 可分別執行上傳與連線，也可一次上傳後直接連線, so that 我能重試傳輸或稍後重新連入同一容器。
+31. As an OpenCode 使用者, I want 上傳中斷時保留容器並可重試, so that 暫時性傳輸問題不會使已建立的遠端環境遺失。
+32. As an OpenCode 使用者, I want 每台容器取得互相隔離的專案副本, so that 多台遠端 OpenCode 可各自執行工作而不共用工作目錄。
+33. As an OpenCode 使用者, I want 每個容器同時只允許一個互動式 TUI 連線, so that 多個終端不會同時控制同一個互動工作階段。
 
 ## Implementation Decisions
 
@@ -53,14 +62,21 @@ Status: ready-for-agent
 - 刪除容器須停止並移除 Docker 容器、終止 Tunnel，並清除該容器的暫存工作資料。
 - 後端重新啟動後，Docker 中既有容器應持續執行；後端重新盤點既有容器，恢復狀態管理及健康監控。
 - OpenCode 服務採用部署設定提供的共用密碼。管理 API 僅供內部管理者使用，不提供使用者層級容器所有權隔離；管理 API 的憑證或網路保護方式須由部署設定提供。
+- 管理者仍逐台呼叫 `POST /api/opencode/containers` 建立容器。成功回應除容器識別碼與 Tunnel URL 外，另提供該容器專屬的 CLI 上傳與連線資訊；專屬憑證不得要求使用者在本機持有 Docker 權限或 OpenCode 管理密碼。
+- 提供獨立安裝於使用者本機的專案 CLI。CLI 接收使用者指定的 project folder，預設排除常見大型產物目錄，將其上傳至指定容器；CLI 亦提供分開的上傳與連線操作，以及先上傳再連線的一鍵操作。
+- 專案上傳由本機 CLI 經後端提供的 API/連線能力完成，後端負責將資料放入指定容器的工作目錄。每個容器擁有隔離的專案副本；不進行本機與遠端的持續雙向同步，也不建立 Git worktree/branch 流程。
+- 上傳失敗或中斷時保留容器，CLI 可對同一容器重試。CLI 只有在上傳完成後才啟動/連入該容器的 OpenCode TUI。專案資料隨容器存續；移除容器時一併清除，不要求獨立持久化 Docker volume。
+- 本機 CLI 連入遠端容器中的互動式 OpenCode TUI；每個容器同時只允許一個互動式 TUI 工作階段。容器仍須符合既有 OpenCode server/Tunnel 管理需求。
 - 以部署設定限制單一容器 CPU、記憶體及同時執行容器數量。
 - 遵循 ADR「使用 Docker OpenCode 容器與 Cloudflare Quick Tunnel」：使用同主機 Docker、容器內 `cloudflared` 與臨時 Quick Tunnel；接受 URL 可因 Tunnel 重建而改變，並以健康監控及查詢最新 URL 因應。
-- 主要測試 seam 為實際運作環境中的黑箱 HTTP 管理 API。測試需啟動真實後端及 Docker 環境，透過 API 建立實際容器與 Quick Tunnel，並從 Tunnel URL 驗證服務可達及管理生命週期。
+- 主要測試 seam 為實際運作環境中的黑箱 HTTP 管理 API 與本機 CLI 可觀察的上傳/終端互動。測試需啟動真實後端及 Docker 環境，透過 API 建立實際容器與 Quick Tunnel，並從 Tunnel URL 驗證服務可達及管理生命週期。
 
 ## Testing Decisions
 
 - 好的測試應從呼叫者可見的 HTTP 回應、Tunnel URL 可達性、容器生命週期與健康狀態轉換驗證行為，不依賴內部類別、方法或未承諾的資料儲存細節。
 - 主要驗收測試使用真實 Docker daemon、實際 OpenCode 容器與 Cloudflare Quick Tunnel：呼叫建立 API，使用配置的 OpenCode 密碼確認成功回應的 Tunnel URL 可透過外部 HTTP 連線至 OpenCode `4096` 服務；再呼叫列表、單筆查詢與刪除 API，確認狀態及資源清理結果。
+- 上傳驗收需驗證 CLI 可指定本機資料夾、套用預設排除規則、將檔案送至正確容器，並在傳輸中斷後重試；確認不同容器的專案副本互相隔離，且刪除容器會清除其工作資料。
+- 終端連線驗收需從本機 CLI 進入遠端 OpenCode TUI、確認上傳完成前不能開始互動、同一容器的第二個 TUI 連線受到限制，並驗證中斷後的連線處理行為。
 - Tunnel 復原測試需在測試容器中使目前 Tunnel 失效，確認健康監控會重建 Tunnel、產生可用的新 URL、查詢 API 回傳新 URL，並確認 OpenCode 容器與工作狀態仍保留。多次復原失敗時，確認容器保留且 API 呈現故障狀態。
 - 驗證初始化逾時、資源數量上限、CPU/記憶體設定、未授權管理呼叫及刪除後暫存資料清除等外部行為。
 - 執行上述整合測試需有可用 Docker daemon、容器建置能力、外網連線及 Cloudflare Quick Tunnel 可用性；測試不得依賴固定 URL，應以每次建立或重建實際回傳的 URL 驗證。
@@ -74,10 +90,12 @@ Status: ready-for-agent
 - 使用者層級帳號、容器所有權隔離或面向公眾的容器管理 API。
 - URL 變更 webhook、推播或事件通知。
 - 停止後保留容器的暫停功能；刪除即完整清除容器、Tunnel 與工作資料。
+- 本機 OpenCode 執行、雙向即時檔案同步、跨容器共用工作目錄、Git worktree/branch 管理及自動合併。
 - 超過復原重試後自動刪除故障容器。
 
 ## Further Notes
 
 - OpenCode SDK 的確切套件名稱/版本、OpenCode 服務啟動方式、API 路徑與 schema、管理 API 的具體驗證機制，以及資源與監控設定預設值尚未在對話中定義，應於實作設計時選定並記錄。
+- 目前容器只啟動 OpenCode server，尚未配置互動式 TTY；後端亦未提供公開的容器終端連線能力。實作需設計本機 CLI 到容器 TUI 的安全互動式終端通道，並決定上傳 API、上傳完成狀態/重試語意、每容器單一 TUI session 的鎖定方式及終端斷線/重連行為。這些協定與機制尚未定案。
 - Cloudflare Quick Tunnel URL 可能在建立或復原時改變；呼叫端應以查詢 API 回傳的目前 Tunnel URL 為準。
 - 規格狀態為 `ready-for-agent`，依 issue tracker 慣例發布於本功能目錄。
