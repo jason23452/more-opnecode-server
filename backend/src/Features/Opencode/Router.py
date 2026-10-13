@@ -2,7 +2,9 @@ import asyncio
 import hmac
 import logging
 import os
+import pty
 import select
+import signal
 import subprocess
 
 from fastapi.security.utils import get_authorization_scheme_param
@@ -101,16 +103,23 @@ async def connect_tui(websocket: WebSocket, container_id: str) -> None:
         return
 
     process = None
+    master_fd = slave_fd = None
     try:
         await websocket.accept()
+        master_fd, slave_fd = pty.openpty()
         process = subprocess.Popen(
             ["docker", "exec", "-it", container_id, "sh", "-lc", "cd /workspace/project && exec opencode ."],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            stdin=slave_fd, stdout=slave_fd, stderr=slave_fd, start_new_session=True,
         )
+        os.close(slave_fd)
+        slave_fd = None
         while process.poll() is None:
-            readable, _, _ = select.select([process.stdout], [], [], 0.05)
+            readable, _, _ = select.select([master_fd], [], [], 0.02)
             if readable:
-                output = os.read(process.stdout.fileno(), 65536)
+                try:
+                    output = os.read(master_fd, 65536)
+                except OSError:
+                    break
                 if output:
                     await websocket.send_bytes(output)
             try:
@@ -120,20 +129,30 @@ async def connect_tui(websocket: WebSocket, container_id: str) -> None:
             if message.get("type") == "websocket.disconnect":
                 break
             data = message.get("bytes")
-            if data and process.stdin:
-                process.stdin.write(data)
-                process.stdin.flush()
+            if data:
+                os.write(master_fd, data)
             elif message.get("text") == "\x04":
                 break
     except Exception:
         logger.info("Remote TUI session disconnected for %s", container_id)
     finally:
+        if slave_fd is not None:
+            os.close(slave_fd)
         if process and process.poll() is None:
-            process.terminate()
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
             try:
                 process.wait(timeout=2)
             except subprocess.TimeoutExpired:
-                process.kill()
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait()
+        if master_fd is not None:
+            os.close(master_fd)
         manager.close_tui(session)
 
 
