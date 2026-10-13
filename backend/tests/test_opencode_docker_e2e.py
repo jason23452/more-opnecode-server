@@ -159,6 +159,7 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
         managed_ids.append(second_id)
         assert target_id != second_id, f"API returned duplicate container ids: {target_id}"
         assert payload["upload_url"] == payload["url"].rstrip("/") + "/upload"
+        assert payload["upload_target_url"].endswith(f"/api/opencode/containers/{target_id}/upload-target")
         assert httpx.put(
             base_url + f"/api/opencode/containers/{target_id}/upload", content=b"must not relay",
             headers={"Authorization": f"Bearer {payload['upload_token']}"}, timeout=10,
@@ -201,22 +202,23 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
             )
             oversized_file = os.path.join(project, "oversized.bin")
             with open(oversized_file, "wb") as source:
-                source.write(os.urandom(1_200_000))
-            oversized = subprocess.run(
-                [cli_executable, "upload", "--url", payload["upload_url"],
-                 f"--token={payload['upload_token']}", "--project", project],
+                source.write(os.urandom(96 * 1024 * 1024))
+            large_upload = subprocess.run(
+                [cli_executable, "upload", "--url", "https://stale.invalid/upload",
+                 f"--token={payload['upload_token']}", "--refresh-url", payload["upload_target_url"],
+                 "--project", project],
+                capture_output=True, text=True, timeout=300,
+            )
+            assert large_upload.returncode == 0, (
+                f"large chunked upload failed: exit={large_upload.returncode}, stderr={large_upload.stderr!r}"
+            )
+            installed_size = subprocess.run(
+                docker_command("exec", target_id, "stat", "-c", "%s", "/workspace/project/oversized.bin"),
                 capture_output=True, text=True,
             )
-            assert oversized.returncode != 0 and "單次上傳限制" in oversized.stderr, (
-                f"oversized archive was not clearly rejected: exit={oversized.returncode}, stderr={oversized.stderr!r}"
-            )
-            retained = subprocess.run(
-                docker_command("exec", target_id, "cat", "/workspace/project/upload-marker.txt"),
-                capture_output=True, text=True,
-            )
-            assert retained.returncode == 0 and retained.stdout == marker, (
-                "oversized upload changed the existing project: "
-                f"exit={retained.returncode}, stdout={retained.stdout!r}, stderr={retained.stderr!r}"
+            assert installed_size.returncode == 0 and installed_size.stdout.strip() == str(96 * 1024 * 1024), (
+                "large archive was not fully installed: "
+                f"exit={installed_size.returncode}, stdout={installed_size.stdout!r}, stderr={installed_size.stderr!r}"
             )
             os.unlink(oversized_file)
             terminal_master, terminal_slave = pty.openpty()

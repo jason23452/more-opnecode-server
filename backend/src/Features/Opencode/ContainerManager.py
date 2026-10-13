@@ -34,6 +34,21 @@ class ContainerManager:
     def get(self, container_id: str) -> dict[str, str] | None:
         return next((container for container in self.list() if container["id"] == container_id), None)
 
+    def upload_target(self, container_id: str, token: str) -> str | None:
+        capability = self._docker(
+            "inspect", "-f", '{{ index .Config.Labels "dynamic-opencode-upload-token" }}',
+            container_id, check=False,
+        )
+        expected = capability.stdout.strip()
+        if capability.returncode != 0 or not expected:
+            return None
+        if not secrets.compare_digest(token, expected):
+            raise PermissionError("invalid upload token")
+        container = self.get(container_id)
+        if container is None or not container["url"]:
+            return None
+        return container["url"].rstrip("/")
+
     def _discover(self) -> list[dict[str, str]]:
         result = self._docker("ps", "-aq", "--no-trunc", "--filter", "label=dynamic-opencode=true", check=False)
         if result.returncode != 0:

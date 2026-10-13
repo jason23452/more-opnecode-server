@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import hmac
+import hashlib
 import io
+import json
 import os
+import re
 import shutil
 import stat
 import tempfile
 import threading
+import time
+import uuid
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
@@ -16,6 +21,86 @@ MAX_ENTRIES = 100_000
 MAX_EXPANDED_BYTES = 2 * 1024**3
 PROJECT = Path("/workspace/project")
 _INSTALL_LOCK = threading.Lock()
+_SESSION_LOCK = threading.RLock()
+CHUNK_BYTES = 8 * 1024 * 1024
+SESSION_TTL_SECONDS = 24 * 60 * 60
+
+
+class UploadSessions:
+    """容器內暫存並驗證分塊封裝，驗證完成後才替換工作目錄。"""
+
+    def __init__(self, target: Path, root: Path, max_bytes: int = 2 * 1024**3):
+        self.target = target
+        self.root = root
+        self.max_bytes = max_bytes
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.lock = _SESSION_LOCK
+        self.cleanup_stale()
+
+    def cleanup_stale(self) -> None:
+        cutoff = time.time() - SESSION_TTL_SECONDS
+        for entry in self.root.iterdir():
+            try:
+                if entry.stat().st_mtime < cutoff:
+                    shutil.rmtree(entry, ignore_errors=True)
+            except OSError:
+                continue
+
+    def create(self, size: int, chunks: int, digest: str) -> str:
+        if size <= 0 or size > self.max_bytes or chunks <= 0 or chunks > 100_000:
+            raise ValueError("Invalid upload size or chunk count")
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError("Invalid archive digest")
+        if chunks != (size + CHUNK_BYTES - 1) // CHUNK_BYTES:
+            raise ValueError("Invalid chunk count for archive size")
+        session = uuid.uuid4().hex
+        directory = self.root / session
+        directory.mkdir(mode=0o700)
+        (directory / "metadata.json").write_text(json.dumps({"size": size, "chunks": chunks, "digest": digest}))
+        return session
+
+    def _session(self, session: str) -> tuple[Path, dict]:
+        if not re.fullmatch(r"[0-9a-f]{32}", session):
+            raise ValueError("Invalid upload session")
+        directory = self.root / session
+        metadata = json.loads((directory / "metadata.json").read_text())
+        return directory, metadata
+
+    def put_chunk(self, session: str, index: int, data: bytes, digest: str) -> None:
+        with self.lock:
+            directory, metadata = self._session(session)
+            if index < 0 or index >= metadata["chunks"]:
+                raise ValueError("Invalid chunk index")
+            expected_size = min(CHUNK_BYTES, metadata["size"] - index * CHUNK_BYTES)
+            if len(data) != expected_size or hashlib.sha256(data).hexdigest() != digest:
+                raise ValueError("Corrupt chunk")
+            destination = directory / f"{index}.chunk"
+            if destination.exists():
+                if destination.read_bytes() != data:
+                    raise ValueError("Chunk conflict")
+                return
+            temporary = directory / f".{index}.{uuid.uuid4().hex}.tmp"
+            temporary.write_bytes(data)
+            os.replace(temporary, destination)
+
+    def finalize(self, session: str) -> None:
+        with self.lock, _INSTALL_LOCK:
+            directory, metadata = self._session(session)
+            paths = [directory / f"{index}.chunk" for index in range(metadata["chunks"])]
+            if not all(path.is_file() for path in paths):
+                raise ValueError("Missing upload chunks")
+            digest = hashlib.sha256()
+            total = 0
+            for path in paths:
+                with path.open("rb") as chunk:
+                    for block in iter(lambda: chunk.read(1024 * 1024), b""):
+                        digest.update(block)
+                        total += len(block)
+            if total != metadata["size"] or digest.hexdigest() != metadata["digest"]:
+                raise ValueError("Archive size or digest mismatch")
+            data = b"".join(path.read_bytes() for path in paths)
+            install_archive(data, self.target, max_bytes=self.max_bytes)
+            shutil.rmtree(directory)
 
 
 def install_archive(data: bytes, target: Path, max_bytes: int = MAX_UPLOAD_BYTES) -> None:
@@ -71,14 +156,90 @@ def install_archive(data: bytes, target: Path, max_bytes: int = MAX_UPLOAD_BYTES
 class UploadHandler(BaseHTTPRequestHandler):
     server_version = "ProjectUpload/1"
 
-    def do_PUT(self) -> None:
-        if self.path != "/upload":
-            self.send_error(404)
-            return
+    @property
+    def sessions(self) -> UploadSessions:
+        root = Path(os.environ.get("OPENCODE_UPLOAD_SESSION_DIR", "/tmp/opencode-upload-sessions"))
+        return UploadSessions(PROJECT, root, max_bytes=int(os.environ.get("OPENCODE_UPLOAD_MAX_PROJECT_BYTES", 2 * 1024**3)))
+
+    def _authorized(self) -> bool:
         supplied = self.headers.get("Authorization", "")
         expected = "Bearer " + os.environ.get("OPENCODE_UPLOAD_TOKEN", "")
         if not os.environ.get("OPENCODE_UPLOAD_TOKEN") or not hmac.compare_digest(supplied, expected):
             self.send_error(401, "Invalid container upload token")
+            return False
+        return True
+
+    def _body(self, limit: int) -> bytes | None:
+        try:
+            length = int(self.headers.get("Content-Length", "-1"))
+        except ValueError:
+            length = -1
+        if length < 0:
+            self.send_error(411, "Content-Length is required")
+            return None
+        if length > limit:
+            self.send_error(413, "Upload request exceeds chunk limit")
+            return None
+        data = self.rfile.read(length)
+        if len(data) != length:
+            self.send_error(400, "Incomplete request body")
+            return None
+        return data
+
+    def _json(self, payload: dict) -> None:
+        data = json.dumps(payload).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_POST(self) -> None:
+        if not self._authorized():
+            return
+        if self.path == "/upload/sessions":
+            data = self._body(4096)
+            if data is None:
+                return
+            try:
+                payload = json.loads(data)
+                session = self.sessions.create(int(payload["size"]), int(payload["chunks"]), payload["sha256"])
+            except (ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
+                self.send_error(400, str(error))
+                return
+            self._json({"session_id": session})
+            return
+        match = re.fullmatch(r"/upload/sessions/([0-9a-f]{32})/finalize", self.path)
+        if match:
+            try:
+                self.sessions.finalize(match.group(1))
+            except (ValueError, OSError, KeyError, json.JSONDecodeError) as error:
+                self.send_error(400, str(error))
+                return
+            self.send_response(204)
+            self.end_headers()
+            return
+        self.send_error(404)
+
+    def do_PUT(self) -> None:
+        if not self._authorized():
+            return
+        match = re.fullmatch(r"/upload/sessions/([0-9a-f]{32})/chunks/(\d+)", self.path)
+        if match:
+            data = self._body(CHUNK_BYTES)
+            if data is None:
+                return
+            try:
+                self.sessions.put_chunk(match.group(1), int(match.group(2)), data, self.headers.get("X-Chunk-SHA256", ""))
+            except (ValueError, OSError, KeyError, json.JSONDecodeError) as error:
+                self.send_error(400, str(error))
+                return
+            self.send_response(204)
+            self.end_headers()
+            return
+
+        if self.path != "/upload":
+            self.send_error(404)
             return
         try:
             length = int(self.headers.get("Content-Length", "-1"))
