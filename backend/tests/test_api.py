@@ -81,9 +81,9 @@ def test_create_opencode_waits_for_ready_container_and_hides_password() -> None:
             "linux": "curl -fsSL 'https://github.com/jason23452/more-opnecode-server/releases/latest/download/install.sh' | OPENCODE_PROJECT_RELEASE_URL='https://github.com/jason23452/more-opnecode-server/releases/latest/download' sh",
         },
         "upload_command": "opencode-project upload --url https://quiet-fox.trycloudflare.com/upload --token=container-upload-token --refresh-url=http://testserver/api/opencode/containers/oc-123/upload-target --project .",
-        "connect_url": "ws://testserver/api/opencode/containers/oc-123/connect",
+        "connect_url": "wss://quiet-fox.trycloudflare.com/connect",
         "connect_token": "container-connect-token",
-        "connect_command": "opencode-project connect --url ws://testserver/api/opencode/containers/oc-123/connect --token=container-connect-token",
+        "connect_command": "opencode-project connect --url wss://quiet-fox.trycloudflare.com/connect --token=container-connect-token",
     }
     assert "shared-secret" not in response.text
 
@@ -136,39 +136,13 @@ def test_upload_target_control_endpoint_requires_container_token_and_returns_onl
     manager.upload_target.assert_called_with("oc-123", "upload-token")
 
 
-def test_connect_websocket_rejects_invalid_container_capability_with_actionable_code() -> None:
-    from starlette.websockets import WebSocketDisconnect
-
+def test_management_api_does_not_expose_a_tui_websocket_relay() -> None:
     manager = Mock(spec=ContainerManager)
-    manager.open_tui.side_effect = PermissionError("invalid capability")
-    app.state.container_manager = manager
-    app.state.settings = Settings(opencode_admin_token="admin-secret")
-
-    with client.websocket_connect("/api/opencode/containers/oc-123/connect?token=wrong") as websocket:
-        try:
-            websocket.receive_bytes()
-        except WebSocketDisconnect as error:
-            assert error.code == 4401
-            assert "授權無效" in error.reason
-        else:
-            raise AssertionError("invalid capability must not open the terminal")
-
-
-def test_connect_websocket_reports_busy_container_without_opening_second_session() -> None:
-    from starlette.websockets import WebSocketDisconnect
-
-    manager = Mock(spec=ContainerManager)
-    manager.open_tui.side_effect = RuntimeError("already connected")
     app.state.container_manager = manager
 
-    with client.websocket_connect("/api/opencode/containers/oc-123/connect?token=valid") as websocket:
-        try:
-            websocket.receive_bytes()
-        except WebSocketDisconnect as error:
-            assert error.code == 4409
-            assert "已有 TUI 工作階段" in error.reason
-        else:
-            raise AssertionError("second TUI session must be refused")
+    response = client.get("/api/opencode/containers/oc-123/connect")
+
+    assert response.status_code == 404
 
 
 def test_create_opencode_upload_command_passes_leading_dash_token_safely() -> None:
@@ -310,37 +284,6 @@ def test_container_manager_refuses_to_delete_unmanaged_container() -> None:
         raise AssertionError("unmanaged containers must not be deleted")
 
     manager._docker.assert_called_once()
-
-
-def test_container_manager_connect_capability_is_scoped_and_released_after_disconnect() -> None:
-    manager = ContainerManager(Settings())
-    manager._docker = Mock(return_value=CompletedProcess([], 0, "container-connect-token\n", ""))
-
-    session = manager.open_tui("oc-target", "container-connect-token")
-    try:
-        try:
-            manager.open_tui("oc-target", "container-connect-token")
-        except RuntimeError:
-            pass
-        else:
-            raise AssertionError("only one TUI session may control a container")
-    finally:
-        manager.close_tui(session)
-
-    reconnected = manager.open_tui("oc-target", "container-connect-token")
-    manager.close_tui(reconnected)
-
-
-def test_container_manager_rejects_connect_capability_from_another_container() -> None:
-    manager = ContainerManager(Settings())
-    manager._docker = Mock(return_value=CompletedProcess([], 0, "other-container-token\n", ""))
-
-    try:
-        manager.open_tui("oc-target", "wrong-token")
-    except PermissionError:
-        pass
-    else:
-        raise AssertionError("another container's capability must not authorize a TUI session")
 
 
 def test_tunnel_recovery_waits_for_consecutive_probe_failures_and_reuses_container() -> None:

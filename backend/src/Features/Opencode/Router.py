@@ -1,18 +1,11 @@
-import asyncio
 import hmac
 import logging
-import os
-import select
-import subprocess
 
-from fastapi.security.utils import get_authorization_scheme_param
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, WebSocket, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
-
-from .DockerCli import docker_command
 
 router = APIRouter(prefix="/opencode/containers", tags=["OpenCode containers"])
 logger = logging.getLogger(__name__)
@@ -99,13 +92,13 @@ def create_container(
                + f"{request.app.state.settings.api_prefix}/opencode/containers/{result['id']}/upload-target")
             + " --project ."
         ),
-        connect_url=("ws" if request.url.scheme == "http" else "wss") + "://" + request.url.netloc
-        + f"{request.app.state.settings.api_prefix}/opencode/containers/{result['id']}/connect",
+        connect_url=("wss" if result["url"].startswith("https://") else "ws")
+        + "://" + result["url"].split("://", 1)[1].rstrip("/") + "/connect",
         connect_token=connect_token,
         connect_command=(
             "opencode-project connect --url "
-            + (("ws" if request.url.scheme == "http" else "wss") + "://" + request.url.netloc)
-            + f"{request.app.state.settings.api_prefix}/opencode/containers/{result['id']}/connect"
+            + (("wss" if result["url"].startswith("https://") else "ws") + "://"
+               + result["url"].split("://", 1)[1].rstrip("/") + "/connect")
             + f" --token={connect_token}"
         ),
     )
@@ -125,71 +118,6 @@ def get_upload_target(
     if target is None:
         raise HTTPException(status_code=404, detail="Container upload target not found")
     return {"upload_url": target + "/upload"}
-
-
-@router.websocket("/{container_id}/connect")
-async def connect_tui(websocket: WebSocket, container_id: str) -> None:
-    scheme, token = get_authorization_scheme_param(websocket.headers.get("authorization", ""))
-    if scheme.lower() != "bearer":
-        token = ""
-    manager = websocket.app.state.container_manager
-    try:
-        session = manager.open_tui(container_id, token)
-    except PermissionError:
-        await websocket.accept()
-        await websocket.close(code=4401, reason="連線授權無效，請使用建立容器時提供的連線資訊")
-        return
-    except LookupError:
-        await websocket.accept()
-        await websocket.close(code=4404, reason="找不到此 OpenCode 容器")
-        return
-    except RuntimeError:
-        await websocket.accept()
-        await websocket.close(code=4409, reason="此容器已有 TUI 工作階段，請稍後重試")
-        return
-
-    process = None
-    output_stream = None
-    try:
-        await websocket.accept()
-        process = subprocess.Popen(
-            docker_command("exec", "-i", container_id, "python3", "/usr/local/bin/opencode-pty-runner",
-                           "sh", "-lc", "cd /workspace/project && exec opencode ."),
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        )
-        output_stream = process.stdout
-        while process.poll() is None:
-            readable, _, _ = select.select([output_stream], [], [], 0.02)
-            if readable:
-                output = os.read(output_stream.fileno(), 65536)
-                if output:
-                    await websocket.send_bytes(output)
-            try:
-                message = await asyncio.wait_for(websocket.receive(), timeout=0.02)
-            except asyncio.TimeoutError:
-                continue
-            if message.get("type") == "websocket.disconnect":
-                break
-            data = message.get("bytes")
-            if data:
-                process.stdin.write(data)
-                process.stdin.flush()
-            elif message.get("text") == "\x04":
-                break
-    except Exception:
-        logger.info("Remote TUI session disconnected for %s", container_id)
-    finally:
-        if process and process.poll() is None:
-            if process.stdin:
-                process.stdin.close()
-            try:
-                process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-        if output_stream is not None:
-            output_stream.close()
-        manager.close_tui(session)
 
 
 @router.get("", response_model=list[ContainerStatus])

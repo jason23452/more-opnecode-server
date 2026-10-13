@@ -22,7 +22,6 @@ class ContainerManager:
         self._statuses: dict[str, str] = {}
         self._creating: set[str] = set()
         self._recovering: set[str] = set()
-        self._tui_sessions: dict[str, str] = {}
         self._discover()
         self._stop = threading.Event()
         self._monitor = threading.Thread(target=self._monitor_loop, name="opencode-tunnel-monitor", daemon=True)
@@ -195,11 +194,11 @@ class ContainerManager:
             container_id = self._docker(
                 "run", "-d", "--label", "dynamic-opencode=true",
                 "--label", f"dynamic-opencode-upload-token={upload_token}",
-                "--label", f"dynamic-opencode-connect-token={connect_token}",
                 "--cpus", str(self.settings.opencode_container_cpu),
                 "--memory", self.settings.opencode_container_memory,
                 "-e", f"OPENCODE_SERVER_PASSWORD={self.settings.opencode_password}",
                 "-e", f"OPENCODE_UPLOAD_TOKEN={upload_token}",
+                "-e", f"OPENCODE_CONNECT_TOKEN={connect_token}",
                 "-e", f"OPENCODE_UPLOAD_MAX_BYTES={self.settings.opencode_upload_max_bytes}",
                 "-e", f"OPENCODE_TUNNEL_RETRY_INITIAL_DELAY={self.settings.opencode_tunnel_retry_initial_delay}",
                 "-e", f"OPENCODE_TUNNEL_RETRY_MAX_DELAY={self.settings.opencode_tunnel_retry_max_delay}",
@@ -249,31 +248,6 @@ class ContainerManager:
             self._statuses.pop(container_id, None)
             self._failures.pop(container_id, None)
             self._recovering.discard(container_id)
-            self._tui_sessions.pop(container_id, None)
-
-    def open_tui(self, container_id: str, token: str) -> str:
-        managed = self._docker(
-            "inspect", "-f", '{{ index .Config.Labels "dynamic-opencode-connect-token" }}',
-            container_id, check=False,
-        )
-        expected = managed.stdout.strip()
-        if managed.returncode != 0 or not expected:
-            raise LookupError("managed container not found")
-        if not secrets.compare_digest(token, expected):
-            raise PermissionError("invalid connect token")
-        with self._lock:
-            if container_id in self._tui_sessions:
-                raise RuntimeError("TUI session is already active")
-            session = secrets.token_urlsafe(16)
-            self._tui_sessions[container_id] = session
-            return session
-
-    def close_tui(self, session: str) -> None:
-        with self._lock:
-            self._tui_sessions = {
-                container_id: active for container_id, active in self._tui_sessions.items()
-                if active != session
-            }
 
     def _healthy(self, url: str) -> bool:
         try:
