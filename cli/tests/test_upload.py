@@ -38,6 +38,14 @@ class UploadTests(unittest.TestCase):
         self.assertEqual(sender.call_count, 2)
         self.assertEqual(sender.call_args_list[0].args, sender.call_args_list[1].args)
 
+    def test_upload_reports_single_request_size_limit_before_network_transfer(self):
+        from opencode_project.upload import MAX_UPLOAD_BYTES
+
+        with patch("opencode_project.upload._send") as sender:
+            with self.assertRaisesRegex(ValueError, "單次上傳上限"):
+                upload_archive("https://container.trycloudflare.com/upload", "token", b"x" * (MAX_UPLOAD_BYTES + 1))
+        sender.assert_not_called()
+
     def test_connect_relays_terminal_input_and_displays_remote_output(self):
         from opencode_project.connect import connect_terminal
 

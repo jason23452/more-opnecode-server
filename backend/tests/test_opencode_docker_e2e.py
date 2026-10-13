@@ -123,6 +123,7 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
         "OPENCODE_PASSWORD": password,
         "OPENCODE_IMAGE": f"dynamic-opencode-upload-e2e:{uuid.uuid4().hex[:8]}",
         "OPENCODE_STARTUP_TIMEOUT": "300",
+        "OPENCODE_UPLOAD_MAX_BYTES": "1048576",
     }
     process = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "src.App.Main:app", "--host", "127.0.0.1", "--port", str(api_port)],
@@ -157,6 +158,18 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
         second_id = second_created.json()["id"]
         managed_ids.append(second_id)
         assert target_id != second_id, f"API returned duplicate container ids: {target_id}"
+        assert payload["upload_url"] == payload["url"].rstrip("/") + "/upload"
+        assert httpx.put(
+            base_url + f"/api/opencode/containers/{target_id}/upload", content=b"must not relay",
+            headers={"Authorization": f"Bearer {payload['upload_token']}"}, timeout=10,
+        ).status_code == 404, "management API must not expose a project body relay"
+        assert _probe_external_url(payload["url"], password).status_code == 200
+
+        wrong_target = httpx.put(
+            payload["upload_url"], content=b"wrong container capability",
+            headers={"Authorization": f"Bearer {second_created.json()['upload_token']}"}, timeout=30,
+        )
+        assert wrong_target.status_code == 401, f"foreign container token was accepted: {wrong_target.status_code}"
 
         with tempfile.TemporaryDirectory(prefix="opencode-upload-e2e-") as project:
             marker = f"uploaded-{uuid.uuid4().hex}"
@@ -177,6 +190,35 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
                 f"uv tool dir --bin failed: stdout={tool_bin.stdout!r}, stderr={tool_bin.stderr!r}"
             )
             cli_executable = os.path.join(tool_bin.stdout.strip(), "opencode-project")
+            uploaded_once = subprocess.run(
+                [cli_executable, "upload", "--url", payload["upload_url"],
+                 f"--token={payload['upload_token']}", "--project", project],
+                capture_output=True, text=True, timeout=60,
+            )
+            assert uploaded_once.returncode == 0, (
+                f"CLI direct Tunnel upload failed: exit={uploaded_once.returncode}, "
+                f"stdout={uploaded_once.stdout!r}, stderr={uploaded_once.stderr!r}"
+            )
+            oversized_file = os.path.join(project, "oversized.bin")
+            with open(oversized_file, "wb") as source:
+                source.write(os.urandom(1_200_000))
+            oversized = subprocess.run(
+                [cli_executable, "upload", "--url", payload["upload_url"],
+                 f"--token={payload['upload_token']}", "--project", project],
+                capture_output=True, text=True,
+            )
+            assert oversized.returncode != 0 and "單次上傳限制" in oversized.stderr, (
+                f"oversized archive was not clearly rejected: exit={oversized.returncode}, stderr={oversized.stderr!r}"
+            )
+            retained = subprocess.run(
+                docker_command("exec", target_id, "cat", "/workspace/project/upload-marker.txt"),
+                capture_output=True, text=True,
+            )
+            assert retained.returncode == 0 and retained.stdout == marker, (
+                "oversized upload changed the existing project: "
+                f"exit={retained.returncode}, stdout={retained.stdout!r}, stderr={retained.stderr!r}"
+            )
+            os.unlink(oversized_file)
             terminal_master, terminal_slave = pty.openpty()
             tui_process = subprocess.Popen(
                 [cli_executable, "upload",
@@ -215,7 +257,7 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
             )
             busy = subprocess.run(
                 [cli_executable, "connect", "--url", payload["connect_url"],
-                 "--token", payload["connect_token"]],
+                 f"--token={payload['connect_token']}"],
                 stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
             )
             assert busy.returncode != 0 and "已有 TUI 工作階段" in busy.stderr, (
@@ -228,7 +270,7 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
 
             reconnect_master, reconnect_slave = pty.openpty()
             reconnect = subprocess.Popen(
-                [cli_executable, "connect", "--url", payload["connect_url"], "--token", payload["connect_token"]],
+                [cli_executable, "connect", "--url", payload["connect_url"], f"--token={payload['connect_token']}"],
                 stdin=reconnect_slave, stdout=reconnect_slave, stderr=reconnect_slave,
             )
             os.close(reconnect_slave)
@@ -339,7 +381,7 @@ def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
         container_id = payload["id"]
         assert "url" in payload
         assert payload["upload_token"]
-        assert payload["upload_url"].endswith(f"/api/opencode/containers/{container_id}/upload")
+        assert payload["upload_url"] == payload["url"].rstrip("/") + "/upload"
         assert password not in response.text
         reachable = _probe_external_url(payload["url"], password)
         assert reachable.status_code == 200

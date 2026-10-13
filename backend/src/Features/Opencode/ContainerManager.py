@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import io
 import re
 import secrets
-import stat
 import subprocess
-import textwrap
 import threading
 import time
-import zipfile
 from pathlib import Path
 
 from .DockerCli import docker_command
@@ -188,6 +184,8 @@ class ContainerManager:
                 "--cpus", str(self.settings.opencode_container_cpu),
                 "--memory", self.settings.opencode_container_memory,
                 "-e", f"OPENCODE_SERVER_PASSWORD={self.settings.opencode_password}",
+                "-e", f"OPENCODE_UPLOAD_TOKEN={upload_token}",
+                "-e", f"OPENCODE_UPLOAD_MAX_BYTES={self.settings.opencode_upload_max_bytes}",
                 "-e", f"OPENCODE_TUNNEL_RETRY_INITIAL_DELAY={self.settings.opencode_tunnel_retry_initial_delay}",
                 "-e", f"OPENCODE_TUNNEL_RETRY_MAX_DELAY={self.settings.opencode_tunnel_retry_max_delay}",
                 self.settings.opencode_image,
@@ -220,83 +218,6 @@ class ContainerManager:
                 self._statuses.pop(container_id, None)
                 self._failures.pop(container_id, None)
             raise
-
-    def upload(self, container_id: str, token: str, archive: bytes) -> None:
-        managed = self._docker(
-            "inspect", "-f", '{{ index .Config.Labels "dynamic-opencode-upload-token" }}',
-            container_id, check=False,
-        )
-        if managed.returncode != 0:
-            raise LookupError("managed container not found")
-        expected = managed.stdout.strip()
-        if not expected:
-            raise LookupError("managed container not found")
-        if not secrets.compare_digest(token, expected):
-            raise PermissionError("invalid upload token")
-        try:
-            with zipfile.ZipFile(io.BytesIO(archive)) as project:
-                entries = project.infolist()
-                if len(entries) > 100_000 or sum(item.file_size for item in entries) > 2 * 1024**3:
-                    raise ValueError("project archive exceeds extraction limits")
-                for item in entries:
-                    relative = Path(item.filename)
-                    mode = item.external_attr >> 16
-                    if relative.is_absolute() or ".." in relative.parts or stat.S_ISLNK(mode):
-                        raise ValueError("unsafe project archive path")
-        except zipfile.BadZipFile as error:
-            raise ValueError("invalid zip archive") from error
-        extractor = textwrap.dedent("""
-            import os, pathlib, shutil, stat, sys, tempfile, zipfile
-            target = pathlib.Path('/workspace/project')
-            parent = target.parent
-            parent.mkdir(parents=True, exist_ok=True)
-            with tempfile.TemporaryFile() as streamed_archive:
-                shutil.copyfileobj(sys.stdin.buffer, streamed_archive)
-                streamed_archive.seek(0)
-                with zipfile.ZipFile(streamed_archive) as archive:
-                    entries = archive.infolist()
-                    if len(entries) > 100_000 or sum(item.file_size for item in entries) > 2 * 1024**3:
-                        raise ValueError('project archive exceeds extraction limits')
-                    checked = []
-                    for item in entries:
-                        relative = pathlib.PurePosixPath(item.filename)
-                        mode = item.external_attr >> 16
-                        if relative.is_absolute() or '..' in relative.parts or stat.S_ISLNK(mode):
-                            raise ValueError('unsafe project archive path')
-                        checked.append((item, relative))
-                    staging = pathlib.Path(tempfile.mkdtemp(prefix='.project-upload-', dir=parent))
-                    backup = None
-                    try:
-                        for item, relative in checked:
-                            destination = staging.joinpath(*relative.parts)
-                            destination.resolve().relative_to(staging.resolve())
-                            if item.is_dir():
-                                destination.mkdir(parents=True, exist_ok=True)
-                            else:
-                                destination.parent.mkdir(parents=True, exist_ok=True)
-                                destination.write_bytes(archive.read(item))
-                        if target.exists():
-                            backup = pathlib.Path(tempfile.mkdtemp(prefix='.project-backup-', dir=parent))
-                            backup.rmdir()
-                            os.replace(target, backup)
-                        try:
-                            os.replace(staging, target)
-                        except Exception:
-                            if backup is not None and backup.exists() and not target.exists():
-                                os.replace(backup, target)
-                            raise
-                        if backup is not None:
-                            shutil.rmtree(backup)
-                    finally:
-                        if staging.exists():
-                            shutil.rmtree(staging)
-        """).strip()
-        result = subprocess.run(
-            docker_command("exec", "-i", container_id, "python3", "-c", extractor),
-            input=archive, capture_output=True, timeout=300,
-        )
-        if result.returncode != 0:
-            raise RuntimeError("project archive could not be written into container workspace")
 
     def delete(self, container_id: str) -> None:
         managed = self._docker(

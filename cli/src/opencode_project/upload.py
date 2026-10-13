@@ -12,6 +12,7 @@ EXCLUDED_DIRECTORIES = {
     ".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__",
     ".next", ".nuxt", "dist", "build", "target", "coverage",
 }
+MAX_UPLOAD_BYTES = 95 * 1024 * 1024
 
 
 def create_archive(project: Path) -> bytes:
@@ -46,6 +47,11 @@ def _send(url: str, token: str, archive: bytes) -> int:
 
 
 def upload_archive(url: str, token: str, archive: bytes, retries: int = 3) -> None:
+    if len(archive) > MAX_UPLOAD_BYTES:
+        raise ValueError(
+            f"專案封裝檔超過單次上傳上限 95 MiB（目前 {len(archive) / 1024 / 1024:.1f} MiB）；"
+            "請縮小專案後重試。大型專案分塊傳輸將由後續版本支援。"
+        )
     last_error: Exception | None = None
     for attempt in range(max(1, retries)):
         try:
@@ -54,6 +60,10 @@ def upload_archive(url: str, token: str, archive: bytes, retries: int = 3) -> No
                 raise RuntimeError(f"上傳失敗：HTTP {status}")
             return
         except (OSError, URLError, HTTPError, RuntimeError) as error:
+            if isinstance(error, HTTPError) and error.code == 413:
+                raise ValueError(
+                    "專案封裝檔超過 Tunnel 單次上傳限制（HTTP 413）；請縮小專案後重試。"
+                ) from error
             last_error = error
             if attempt + 1 < retries:
                 time.sleep(min(2 ** attempt, 8))

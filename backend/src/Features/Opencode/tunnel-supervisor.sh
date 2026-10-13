@@ -18,7 +18,7 @@ trap stop_tunnel INT TERM
 
 while :; do
   started_at=$(date +%s)
-  cloudflared tunnel --url http://127.0.0.1:4096 >>"$log_file" 2>&1 &
+  cloudflared tunnel --url http://127.0.0.1:8080 >>"$log_file" 2>&1 &
   tunnel_pid=$!
   wait "$tunnel_pid"
   exit_status=$?
