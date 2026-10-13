@@ -1,6 +1,6 @@
 # OpenCode 專案上傳與遠端 TUI CLI
 
-此套件可獨立安裝於使用者本機，不需要安裝 Docker 或設定 OpenCode 管理密碼。
+此 CLI 原始碼隨本儲存庫一同提供；可在儲存庫 checkout 根目錄安裝至使用者本機，不需要安裝 Docker 或設定 OpenCode 管理密碼。API 建立容器回應中的安裝指令也需在 checkout 根目錄執行。
 
 ## 安裝
 

@@ -265,6 +265,7 @@ class ContainerManager:
                             raise ValueError('unsafe project archive path')
                         checked.append((item, relative))
                     staging = pathlib.Path(tempfile.mkdtemp(prefix='.project-upload-', dir=parent))
+                    backup = None
                     try:
                         for item, relative in checked:
                             destination = staging.joinpath(*relative.parts)
@@ -275,8 +276,17 @@ class ContainerManager:
                                 destination.parent.mkdir(parents=True, exist_ok=True)
                                 destination.write_bytes(archive.read(item))
                         if target.exists():
-                            shutil.rmtree(target)
-                        os.replace(staging, target)
+                            backup = pathlib.Path(tempfile.mkdtemp(prefix='.project-backup-', dir=parent))
+                            backup.rmdir()
+                            os.replace(target, backup)
+                        try:
+                            os.replace(staging, target)
+                        except Exception:
+                            if backup is not None and backup.exists() and not target.exists():
+                                os.replace(backup, target)
+                            raise
+                        if backup is not None:
+                            shutil.rmtree(backup)
                     finally:
                         if staging.exists():
                             shutil.rmtree(staging)

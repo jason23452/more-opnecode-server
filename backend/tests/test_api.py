@@ -74,7 +74,7 @@ def test_create_opencode_waits_for_ready_container_and_hides_password() -> None:
         "id": "oc-123", "url": "https://quiet-fox.trycloudflare.com",
         "upload_url": "http://testserver/api/opencode/containers/oc-123/upload",
         "upload_token": "container-upload-token",
-        "cli_install_command": "uv tool install ./cli",
+        "cli_install_command": "python -m pip install ./cli",
         "upload_command": "opencode-project upload --url http://testserver/api/opencode/containers/oc-123/upload --token=container-upload-token --project .",
         "connect_url": "ws://testserver/api/opencode/containers/oc-123/connect",
         "connect_token": "container-connect-token",
@@ -620,6 +620,47 @@ def test_container_manager_upload_rejects_archive_path_traversal_before_containe
         raise AssertionError("archive paths must not escape the target container workspace")
 
     manager._docker.assert_called_once()
+
+
+def test_container_manager_upload_preserves_previous_project_when_installation_fails(tmp_path, monkeypatch) -> None:
+    import io
+    import subprocess
+    import zipfile
+
+    import src.Features.Opencode.ContainerManager as container_manager_module
+
+    manager = ContainerManager(Settings())
+    manager._docker = Mock(return_value=CompletedProcess([], 0, "expected-token\n", ""))
+    target = tmp_path / "project"
+    target.mkdir()
+    (target / "existing.txt").write_text("previous project")
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as project:
+        project.writestr("replacement.txt", "new project")
+
+    original_run = subprocess.run
+
+    def run_extractor(command, *, input, capture_output, timeout):
+        script = command[command.index("-c") + 1].replace(
+            "pathlib.Path('/workspace/project')", f"pathlib.Path({str(target)!r})"
+        )
+        script = "import os\noriginal_replace = os.replace\ndef fail_install(source, destination):\n    if str(destination) == " + repr(str(target)) + " and pathlib.Path(source).name.startswith('.project-upload-'):\n        raise OSError('simulated install failure')\n    return original_replace(source, destination)\nos.replace = fail_install\n" + script
+        result = original_run(
+            ["python3", "-c", script], input=input, capture_output=capture_output, timeout=timeout,
+        )
+        return CompletedProcess(command, result.returncode, result.stdout, result.stderr)
+
+    monkeypatch.setattr(container_manager_module.subprocess, "run", run_extractor)
+
+    try:
+        manager.upload("oc-target", "expected-token", archive.getvalue())
+    except RuntimeError as error:
+        assert "could not be written" in str(error)
+    else:
+        raise AssertionError("a failed staging installation must fail the upload")
+
+    assert (target / "existing.txt").read_text() == "previous project"
+    assert not (target / "replacement.txt").exists()
 
 
 def test_container_manager_cleans_up_container_when_initialization_times_out() -> None:
