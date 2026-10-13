@@ -73,6 +73,7 @@ src/
 | `OPENCODE_TUNNEL_RECOVERY_DELAY` | `2` | 重建失敗後的等待秒數 |
 | `OPENCODE_TUNNEL_RETRY_INITIAL_DELAY` | `5` | cloudflared 建立失敗（包含 Quick Tunnel 回覆 429）後首次重試等待秒數，採指數退避 |
 | `OPENCODE_TUNNEL_RETRY_MAX_DELAY` | `60` | cloudflared 指數退避的最長等待秒數 |
+| `OPENCODE_UPLOAD_MAX_BYTES` | `99614720`（95 MiB） | 單一上傳請求上限；必須介於 1 byte 至 95 MiB，超過會在 API 設定載入時拒絕。容器 ingress 的 nginx 上限固定為 95 MiB，分塊請求不超過 8 MiB。 |
 | `OPENCODE_CLI_RELEASE_URL` | GitHub 最新 Release assets 網址 | 容器建立回應中各平台 CLI 安裝指令使用的下載來源 |
 
 範例：

@@ -19,9 +19,11 @@ class UploadTests(unittest.TestCase):
             (root / "dist" / "bundle.js").write_text("large")
 
             archive = create_archive(root)
-
-            with zipfile.ZipFile(io.BytesIO(archive)) as project:
-                self.assertEqual(project.namelist(), ["main.py"])
+            try:
+                with zipfile.ZipFile(archive) as project:
+                    self.assertEqual(project.namelist(), ["main.py"])
+            finally:
+                archive.unlink()
 
     def test_upload_retries_failed_transfer_using_same_container_capability(self):
         responses = [OSError("connection interrupted"), 204]
@@ -65,6 +67,8 @@ class UploadTests(unittest.TestCase):
         chunk_calls = [call for call in request.call_args_list if "/chunks/" in call.args[0]]
         self.assertEqual([call.args[0].rsplit("/", 1)[1] for call in chunk_calls], ["0", "0", "1", "2"])
         self.assertTrue(all("api" not in call.args[0] for call in chunk_calls))
+        session_payload = json.loads(request.call_args_list[0].args[2])
+        self.assertRegex(session_payload["session_id"], r"^[0-9a-f]{32}$")
 
     def test_refresh_target_normalizes_upload_endpoint_to_tunnel_root(self):
         import json
@@ -73,6 +77,17 @@ class UploadTests(unittest.TestCase):
             "upload_url": "https://fresh.example/upload",
         }).encode()):
             self.assertEqual(_refresh_target("https://control/target", "token"), "https://fresh.example")
+
+    def test_lost_session_creation_response_retries_with_same_idempotency_metadata(self):
+        import json
+        import opencode_project.upload as upload
+        with patch.multiple(upload, MAX_UPLOAD_BYTES=1, CHUNK_BYTES=3), \
+                patch("opencode_project.upload._request") as request, \
+                patch("opencode_project.upload.time.sleep"):
+            request.side_effect = [OSError("response lost"), json.dumps({"session_id": "f" * 32}).encode(), b"", b"", b""]
+            upload.upload_archive("https://container/upload", "token", b"abcd", retries=2)
+        first, retry = (json.loads(call.args[2]) for call in request.call_args_list[:2])
+        self.assertEqual(first, retry)
 
     def test_connect_relays_terminal_input_and_displays_remote_output(self):
         from opencode_project.connect import connect_terminal

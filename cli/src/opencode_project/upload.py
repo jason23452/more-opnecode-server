@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-import io
 import hashlib
 import json
 import os
+import tempfile
 import time
+import uuid
 import zipfile
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -18,12 +20,22 @@ MAX_UPLOAD_BYTES = 95 * 1024 * 1024
 CHUNK_BYTES = 8 * 1024 * 1024
 
 
-def create_archive(project: Path) -> bytes:
+@dataclass(frozen=True)
+class UploadMetadata:
+    session_id: str
+    size: int
+    chunks: int
+    sha256: str
+
+
+def create_archive(project: Path) -> Path:
     root = project.expanduser().resolve()
     if not root.is_dir():
         raise ValueError(f"專案資料夾不存在：{root}")
-    output = io.BytesIO()
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    output = tempfile.NamedTemporaryFile(prefix="opencode-project-", suffix=".zip", delete=False)
+    output_path = Path(output.name)
+    output.close()
+    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for current, directories, files in os.walk(root, followlinks=False):
             current_path = Path(current)
             directories[:] = sorted(
@@ -35,7 +47,7 @@ def create_archive(project: Path) -> bytes:
                 if path.is_symlink() or not path.is_file():
                     continue
                 archive.write(path, path.relative_to(root).as_posix())
-    return output.getvalue()
+    return output_path
 
 
 def _send(url: str, token: str, archive: bytes) -> int:
@@ -81,27 +93,37 @@ def _retry_request(operation, retries: int, refresh_url: str | None, token: str,
     raise RuntimeError(f"上傳失敗，請再次執行相同命令重試：{last_error}") from last_error
 
 
-def upload_archive(url: str, token: str, archive: bytes, retries: int = 3, refresh_url: str | None = None) -> None:
-    if len(archive) > 2 * 1024**3:
+def upload_archive(url: str, token: str, archive: bytes | Path, retries: int = 3, refresh_url: str | None = None) -> None:
+    archive_path = archive if isinstance(archive, Path) else None
+    size = archive_path.stat().st_size if archive_path else len(archive)
+    if size > 2 * 1024**3:
         raise ValueError("專案封裝檔超過 2 GiB 上限，請縮小專案後重試。")
-    if len(archive) > MAX_UPLOAD_BYTES:
+    if size > MAX_UPLOAD_BYTES or archive_path is not None:
         current_url = url.removesuffix("/upload")
-        metadata = json.dumps({"size": len(archive), "chunks": (len(archive) + CHUNK_BYTES - 1) // CHUNK_BYTES,
-                               "sha256": hashlib.sha256(archive).hexdigest()}).encode()
+        digest = hashlib.sha256()
+        if archive_path:
+            with archive_path.open("rb") as source:
+                for block in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(block)
+        else:
+            digest.update(archive)
+        metadata = json.dumps(asdict(UploadMetadata(uuid.uuid4().hex, size, (size + CHUNK_BYTES - 1) // CHUNK_BYTES,
+                                                     digest.hexdigest()))).encode()
         response, current_url = _retry_request(
             lambda target: _request(target + "/upload/sessions", token, metadata, "POST", {"Content-Type": "application/json"}),
             retries, refresh_url, token, current_url,
         )
         session = json.loads(response)["session_id"]
-        for index, offset in enumerate(range(0, len(archive), CHUNK_BYTES)):
-            chunk = archive[offset:offset + CHUNK_BYTES]
-            digest = hashlib.sha256(chunk).hexdigest()
-            _, current_url = _retry_request(
-                lambda target, i=index, part=chunk, sha=digest: _request(
-                    f"{target}/upload/sessions/{session}/chunks/{i}", token, part, "PUT",
-                    {"Content-Type": "application/octet-stream", "X-Chunk-SHA256": sha}),
-                retries, refresh_url, token, current_url,
-            )
+        with archive_path.open("rb") if archive_path else __import__("io").BytesIO(archive) as source:
+            for index in range((size + CHUNK_BYTES - 1) // CHUNK_BYTES):
+                chunk = source.read(CHUNK_BYTES)
+                chunk_digest = hashlib.sha256(chunk).hexdigest()
+                _, current_url = _retry_request(
+                    lambda target, i=index, part=chunk, sha=chunk_digest: _request(
+                        f"{target}/upload/sessions/{session}/chunks/{i}", token, part, "PUT",
+                        {"Content-Type": "application/octet-stream", "X-Chunk-SHA256": sha}),
+                    retries, refresh_url, token, current_url,
+                )
         _retry_request(
             lambda target: _request(target + f"/upload/sessions/{session}/finalize", token, b"", "POST"),
             retries, refresh_url, token, current_url,
@@ -110,7 +132,8 @@ def upload_archive(url: str, token: str, archive: bytes, retries: int = 3, refre
     last_error: Exception | None = None
     for attempt in range(max(1, retries)):
         try:
-            status = _send(url, token, archive)
+            payload = archive_path.read_bytes() if archive_path else archive
+            status = _send(url, token, payload)
             if status != 204:
                 raise RuntimeError(f"上傳失敗：HTTP {status}")
             return
