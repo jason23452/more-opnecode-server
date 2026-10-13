@@ -123,6 +123,7 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
         "OPENCODE_PASSWORD": password,
         "OPENCODE_IMAGE": f"dynamic-opencode-upload-e2e:{uuid.uuid4().hex[:8]}",
         "OPENCODE_STARTUP_TIMEOUT": "300",
+        "OPENCODE_MAX_CONTAINERS": "20",
         "OPENCODE_UPLOAD_MAX_BYTES": "1048576",
     }
     process = subprocess.Popen(
@@ -159,6 +160,9 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
         managed_ids.append(second_id)
         assert target_id != second_id, f"API returned duplicate container ids: {target_id}"
         assert payload["upload_url"] == payload["url"].rstrip("/") + "/upload"
+        assert payload["connect_url"] == payload["url"].replace("https://", "wss://").rstrip("/") + "/connect"
+        assert "localhost:8000" not in payload["connect_url"]
+        assert payload["connect_token"]
         assert payload["upload_target_url"].endswith(f"/api/opencode/containers/{target_id}/upload-target")
         assert httpx.put(
             base_url + f"/api/opencode/containers/{target_id}/upload", content=b"must not relay",
@@ -191,6 +195,14 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
                 f"uv tool dir --bin failed: stdout={tool_bin.stdout!r}, stderr={tool_bin.stderr!r}"
             )
             cli_executable = os.path.join(tool_bin.stdout.strip(), "opencode-project")
+            unauthorized = subprocess.run(
+                [cli_executable, "connect", "--url", payload["connect_url"], "--token=wrong-token"],
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
+            )
+            assert unauthorized.returncode != 0 and "授權無效" in unauthorized.stderr, (
+                f"invalid TUI token was not rejected clearly: exit={unauthorized.returncode}, "
+                f"stderr={unauthorized.stderr!r}"
+            )
             uploaded_once = subprocess.run(
                 [cli_executable, "upload", "--url", payload["upload_url"],
                  f"--token={payload['upload_token']}", "--project", project],
@@ -355,6 +367,7 @@ def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
         "OPENCODE_PASSWORD": password,
         "OPENCODE_IMAGE": f"dynamic-opencode-e2e:{uuid.uuid4().hex[:8]}",
         "OPENCODE_STARTUP_TIMEOUT": "300",
+        "OPENCODE_MAX_CONTAINERS": "20",
         "OPENCODE_TUNNEL_PROBE_INTERVAL": "2",
         "OPENCODE_TUNNEL_FAILURE_THRESHOLD": "2",
         "OPENCODE_TUNNEL_RECOVERY_ATTEMPTS": "3",
