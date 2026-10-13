@@ -4,10 +4,19 @@
 
 ## 環境需求
 
-- Python 3.10 以上
+- Python 3.12（版本由 `.python-version` 固定）
 - [uv](https://docs.astral.sh/uv/)
 
 ## 安裝與啟動
+
+若同一份工作目錄會在 Windows 與 WSL 間切換，請在 Windows PowerShell 使用獨立的 uv 環境路徑，避免兩種作業系統共用 `.venv`：
+
+```powershell
+$env:UV_PROJECT_ENVIRONMENT = "$env:LOCALAPPDATA\uv\more-opnecode-server-backend-win"
+uv python install 3.12
+uv sync --dev
+uv run uvicorn src.App.Main:app --reload --host 0.0.0.0 --port 8000
+```
 
 ```bash
 uv sync --dev
@@ -51,12 +60,33 @@ src/
 | `API_PREFIX` | `/api` | API 路由前綴 |
 | `DEBUG` | `false` | FastAPI debug 模式 |
 | `FRONTEND_ORIGINS` | `http://localhost:3000` 與 `http://127.0.0.1:3000` | CORS 允許來源，使用 JSON 字串陣列 |
+| `OPENCODE_PASSWORD` | 空字串 | OpenCode 服務共用密碼；未設定時建立容器會失敗 |
+| `OPENCODE_ADMIN_TOKEN` | 空字串 | 管理 API Bearer Token；未設定時管理 API 一律拒絕 |
+| `OPENCODE_CONTAINER_CPU` | `1.0` | 單一容器 CPU 上限 |
+| `OPENCODE_CONTAINER_MEMORY` | `2g` | 單一容器記憶體上限 |
+| `OPENCODE_MAX_CONTAINERS` | `4` | 同時執行容器上限 |
+| `OPENCODE_STARTUP_TIMEOUT` | `180` | OpenCode 與 Quick Tunnel 初始化秒數上限 |
+| `OPENCODE_IMAGE` | `dynamic-opencode:latest` | 固定 OpenCode 容器映像標籤 |
+| `OPENCODE_TUNNEL_PROBE_INTERVAL` | `30` | Tunnel 外部健康探測間隔（秒） |
+| `OPENCODE_TUNNEL_FAILURE_THRESHOLD` | `3` | 觸發 Tunnel 重建前的連續探測失敗次數 |
+| `OPENCODE_TUNNEL_RECOVERY_ATTEMPTS` | `3` | 每輪 Tunnel 重建嘗試次數 |
+| `OPENCODE_TUNNEL_RECOVERY_DELAY` | `2` | 重建失敗後的等待秒數 |
+| `OPENCODE_TUNNEL_RETRY_INITIAL_DELAY` | `5` | cloudflared 建立失敗（包含 Quick Tunnel 回覆 429）後首次重試等待秒數，採指數退避 |
+| `OPENCODE_TUNNEL_RETRY_MAX_DELAY` | `60` | cloudflared 指數退避的最長等待秒數 |
 
 範例：
 
 ```env
 FRONTEND_ORIGINS=["http://localhost:3000","http://127.0.0.1:3000"]
+OPENCODE_PASSWORD=replace-with-a-secret
+OPENCODE_ADMIN_TOKEN=replace-with-an-internal-token
 ```
+
+管理端點 `POST /api/opencode/containers` 需帶 `Authorization: Bearer <OPENCODE_ADMIN_TOKEN>`。成功回傳 `201`，包含 `id`、OpenCode `url`、`upload_url`、`upload_token`、`cli_install_command`、`upload_command`、`connect_url`、`connect_token` 與 `connect_command`；若初始化失敗或達容器數量上限，回傳 `503`。API 不回傳 OpenCode 密碼。`cli_install_command` 使用此儲存庫內附的 CLI 原始碼，請從儲存庫 checkout 根目錄執行。Windows 上透過 Docker Desktop 使用時，WSL 後端可自動選用 `docker.exe`，不需 WSL Docker CLI 或啟用 WSL Integration。
+
+CLI 安裝後先執行回應中的 `upload_command`，即可將目前專案上傳至容器 `/workspace/project`；再執行 `connect_command` 進入遠端 TUI。也可使用支援的 `--connect-url` 與 `--connect-token` 選項，在上傳後直接連線。
+
+真實 Docker/Cloudflare 黑箱測試需可用 Docker daemon 與外網，設定 `OPENCODE_DOCKER_E2E=1` 後執行 `uv run pytest tests/test_opencode_docker_e2e.py -v`。測試會啟動實際後端，呼叫管理 API，驗證 Tunnel 故障後 URL 更新、可連線且原容器工作資料保留，最後清理測試容器。
 
 ## 統一錯誤回應
 
