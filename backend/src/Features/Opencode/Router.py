@@ -1,15 +1,18 @@
 import hmac
 import logging
+import shlex
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/opencode/containers", tags=["OpenCode containers"])
+cli_router = APIRouter(prefix="/opencode", tags=["OpenCode CLI"])
 logger = logging.getLogger(__name__)
 bearer_scheme = HTTPBearer(auto_error=False)
+CommandEnvironment = Literal["mac", "windows", "linux"]
 
 _SAFE_SERVICE_ERROR = "OpenCode 容器服務暫時無法使用"
 
@@ -32,6 +35,13 @@ class ContainerStatus(BaseModel):
     url: str
     upload_url: str
     connect_url: str
+    upload_command: str | None = None
+    connect_command: str | None = None
+
+
+class CliInstallCommand(BaseModel):
+    environment: CommandEnvironment
+    command: str
 
 
 def _tunnel_targets(url: str) -> tuple[str, str]:
@@ -42,9 +52,33 @@ def _tunnel_targets(url: str) -> tuple[str, str]:
     return base + "/upload", websocket_scheme + "://" + base.split("://", 1)[1] + "/connect"
 
 
-def _container_status(container: dict[str, str]) -> ContainerStatus:
+def _container_status(
+    container: dict[str, str],
+    environment: CommandEnvironment | None = None,
+    command_tokens: dict[str, str] | None = None,
+) -> ContainerStatus:
     upload_url, connect_url = _tunnel_targets(container["url"])
-    return ContainerStatus(**container, upload_url=upload_url, connect_url=connect_url)
+    result = {
+        "id": container["id"],
+        "status": container["status"],
+        "url": container["url"],
+        "upload_url": upload_url,
+        "connect_url": connect_url,
+    }
+    if environment and command_tokens:
+        if environment == "windows":
+            quote = lambda value: "'" + value.replace("'", "''") + "'"
+        else:
+            quote = shlex.quote
+        result["upload_command"] = (
+            "opencode-project upload --url " + quote(upload_url)
+            + " --token=" + quote(command_tokens["upload_token"]) + " --project ."
+        )
+        result["connect_command"] = (
+            "opencode-project connect --url " + quote(connect_url)
+            + " --token=" + quote(command_tokens["connect_token"])
+        )
+    return ContainerStatus(**result)
 
 
 def _authorize(request: Request, credentials: HTTPAuthorizationCredentials | None) -> None:
@@ -75,6 +109,11 @@ def _cli_install_commands(release_url: str) -> dict[str, str]:
             f"OPENCODE_PROJECT_RELEASE_URL='{release_url}' sh"
         ),
     }
+
+
+def _cli_install_command(release_url: str, environment: CommandEnvironment) -> str:
+    key = {"mac": "macos", "windows": "windows_powershell", "linux": "linux"}[environment]
+    return _cli_install_commands(release_url)[key]
 
 
 @router.post("", response_model=ContainerCreated, status_code=201)
@@ -110,7 +149,7 @@ def create_container(
     )
 
 
-@router.get("", response_model=list[ContainerStatus])
+@router.get("", response_model=list[ContainerStatus], response_model_exclude_none=True)
 def list_containers(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
@@ -122,10 +161,11 @@ def list_containers(
         raise _service_unavailable("Failed to list OpenCode containers") from error
 
 
-@router.get("/{container_id}", response_model=ContainerStatus)
+@router.get("/{container_id}", response_model=ContainerStatus, response_model_exclude_none=True)
 def get_container(
     container_id: str,
     request: Request,
+    environment: CommandEnvironment | None = Query(default=None),
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> ContainerStatus:
     _authorize(request, credentials)
@@ -135,7 +175,26 @@ def get_container(
         raise _service_unavailable("Failed to retrieve OpenCode container %s", container_id) from error
     if container is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Container not found")
-    return _container_status(container)
+    command_tokens = None
+    if environment:
+        try:
+            command_tokens = request.app.state.container_manager.get_command_tokens(container_id)
+        except Exception as error:
+            raise _service_unavailable("Failed to retrieve CLI command credentials for container %s", container_id) from error
+    return _container_status(container, environment, command_tokens)
+
+
+@cli_router.get("/cli-install-command", response_model=CliInstallCommand)
+def get_cli_install_command(
+    request: Request,
+    environment: CommandEnvironment = Query(...),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> CliInstallCommand:
+    _authorize(request, credentials)
+    return CliInstallCommand(
+        environment=environment,
+        command=_cli_install_command(request.app.state.settings.opencode_cli_release_url, environment),
+    )
 
 
 @router.delete("/{container_id}", status_code=204)

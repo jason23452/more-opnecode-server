@@ -632,6 +632,151 @@ def test_get_opencode_container_returns_current_status_and_tunnel_url() -> None:
     assert "upload_token" not in response.text and "connect_token" not in response.text
 
 
+def test_get_opencode_container_returns_platform_commands_without_exposing_tokens() -> None:
+    manager = Mock(spec=ContainerManager)
+    manager.get.return_value = {
+        "id": "oc-123", "status": "healthy", "url": "https://quiet-fox.trycloudflare.com",
+    }
+    manager.get_command_tokens.return_value = {
+        "upload_token": "upload-secret", "connect_token": "connect-secret",
+    }
+    app.state.container_manager = manager
+    app.state.settings = Settings(opencode_admin_token="admin-secret")
+
+    response = client.get(
+        "/api/opencode/containers/oc-123?environment=windows",
+        headers={"Authorization": "Bearer admin-secret"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": "oc-123", "status": "healthy", "url": "https://quiet-fox.trycloudflare.com",
+        "upload_url": "https://quiet-fox.trycloudflare.com/upload",
+        "connect_url": "wss://quiet-fox.trycloudflare.com/connect",
+        "upload_command": (
+            "opencode-project upload --url 'https://quiet-fox.trycloudflare.com/upload' "
+            "--token='upload-secret' --project ."
+        ),
+        "connect_command": (
+            "opencode-project connect --url 'wss://quiet-fox.trycloudflare.com/connect' "
+            "--token='connect-secret'"
+        ),
+    }
+    assert "upload_token" not in response.json()
+    assert "connect_token" not in response.json()
+    manager.get_command_tokens.assert_called_once_with("oc-123")
+
+
+def test_get_opencode_container_without_environment_preserves_existing_response() -> None:
+    manager = Mock(spec=ContainerManager)
+    manager.get.return_value = {
+        "id": "oc-123", "status": "healthy", "url": "https://quiet-fox.trycloudflare.com",
+    }
+    app.state.container_manager = manager
+    app.state.settings = Settings(opencode_admin_token="admin-secret")
+
+    response = client.get(
+        "/api/opencode/containers/oc-123", headers={"Authorization": "Bearer admin-secret"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": "oc-123", "status": "healthy", "url": "https://quiet-fox.trycloudflare.com",
+        "upload_url": "https://quiet-fox.trycloudflare.com/upload",
+        "connect_url": "wss://quiet-fox.trycloudflare.com/connect",
+    }
+    manager.get_command_tokens.assert_not_called()
+
+
+def test_get_opencode_container_accepts_mac_and_linux_environments() -> None:
+    manager = Mock(spec=ContainerManager)
+    manager.get.return_value = {
+        "id": "oc-123", "status": "healthy", "url": "https://quiet-fox.trycloudflare.com",
+    }
+    manager.get_command_tokens.return_value = {
+        "upload_token": "upload-secret", "connect_token": "connect-secret",
+    }
+    app.state.container_manager = manager
+    app.state.settings = Settings(opencode_admin_token="admin-secret")
+
+    for environment in ("mac", "linux"):
+        response = client.get(
+            f"/api/opencode/containers/oc-123?environment={environment}",
+            headers={"Authorization": "Bearer admin-secret"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["upload_command"] == (
+            "opencode-project upload --url https://quiet-fox.trycloudflare.com/upload "
+            "--token=upload-secret --project ."
+        )
+        assert response.json()["connect_command"] == (
+            "opencode-project connect --url wss://quiet-fox.trycloudflare.com/connect "
+            "--token=connect-secret"
+        )
+
+
+def test_cli_install_command_api_returns_command_for_selected_environment() -> None:
+    app.state.settings = Settings(
+        opencode_admin_token="admin-secret",
+        opencode_cli_release_url="https://downloads.example/cli/latest/download",
+    )
+
+    response = client.get(
+        "/api/opencode/cli-install-command?environment=mac",
+        headers={"Authorization": "Bearer admin-secret"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "environment": "mac",
+        "command": (
+            "curl -fsSL 'https://downloads.example/cli/latest/download/install.sh' | "
+            "OPENCODE_PROJECT_RELEASE_URL='https://downloads.example/cli/latest/download' sh"
+        ),
+    }
+
+
+def test_cli_install_command_api_supports_all_environments() -> None:
+    app.state.settings = Settings(
+        opencode_admin_token="admin-secret",
+        opencode_cli_release_url="https://downloads.example/cli/latest/download",
+    )
+    expected = {
+        "windows": (
+            "$env:OPENCODE_PROJECT_RELEASE_URL = 'https://downloads.example/cli/latest/download'; "
+            "irm 'https://downloads.example/cli/latest/download/install.ps1' | iex"
+        ),
+        "mac": (
+            "curl -fsSL 'https://downloads.example/cli/latest/download/install.sh' | "
+            "OPENCODE_PROJECT_RELEASE_URL='https://downloads.example/cli/latest/download' sh"
+        ),
+        "linux": (
+            "curl -fsSL 'https://downloads.example/cli/latest/download/install.sh' | "
+            "OPENCODE_PROJECT_RELEASE_URL='https://downloads.example/cli/latest/download' sh"
+        ),
+    }
+
+    for environment, command in expected.items():
+        response = client.get(
+            f"/api/opencode/cli-install-command?environment={environment}",
+            headers={"Authorization": "Bearer admin-secret"},
+        )
+        assert response.status_code == 200
+        assert response.json() == {"environment": environment, "command": command}
+
+
+def test_cli_install_command_api_validates_environment() -> None:
+    app.state.settings = Settings(opencode_admin_token="admin-secret")
+
+    response = client.get(
+        "/api/opencode/cli-install-command?environment=windows-xp",
+        headers={"Authorization": "Bearer admin-secret"},
+    )
+
+    assert response.status_code == 422
+
+
 def test_get_opencode_container_returns_not_found_for_unknown_id() -> None:
     manager = Mock(spec=ContainerManager)
     manager.get.return_value = None

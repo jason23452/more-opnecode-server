@@ -219,6 +219,16 @@ def test_standalone_tui_tunnel_connect_propagates_size_resize_and_reconnects() -
         payload = response.json()
         container_id = payload["id"]
         assert payload["connect_url"].endswith("/connect") and payload["connect_token"]
+        for environment in ("windows", "mac", "linux"):
+            queried = httpx.get(
+                base_url + f"/api/opencode/containers/{container_id}?environment={environment}",
+                headers=headers, timeout=20,
+            )
+            assert queried.status_code == 200, queried.text
+            commands = queried.json()
+            assert payload["upload_token"] in commands["upload_command"]
+            assert payload["connect_token"] in commands["connect_command"]
+            assert "upload_token" not in commands and "connect_token" not in commands
         empty_workdir = subprocess.run(
             docker_command("exec", container_id, "test", "!", "-e", "/workspace/project"),
             capture_output=True,

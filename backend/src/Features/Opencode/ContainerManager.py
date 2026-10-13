@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import secrets
 import subprocess
@@ -32,6 +33,29 @@ class ContainerManager:
 
     def get(self, container_id: str) -> dict[str, str] | None:
         return next((container for container in self.list() if container["id"] == container_id), None)
+
+    def get_command_tokens(self, container_id: str) -> dict[str, str]:
+        """Read scoped CLI capabilities for a protected command response."""
+        upload = self._docker(
+            "inspect", "-f", '{{ index .Config.Labels "dynamic-opencode-upload-token" }}',
+            container_id, check=False,
+        )
+        environment = self._docker("inspect", "-f", "{{json .Config.Env}}", container_id, check=False)
+        if upload.returncode != 0 or environment.returncode != 0:
+            raise RuntimeError("managed container command credentials are unavailable")
+        try:
+            variables = json.loads(environment.stdout)
+        except (TypeError, ValueError) as error:
+            raise RuntimeError("managed container command credentials are unavailable") from error
+        connect = next(
+            (value.partition("=")[2] for value in variables
+             if isinstance(value, str) and value.startswith("OPENCODE_CONNECT_TOKEN=")),
+            "",
+        )
+        upload_token = upload.stdout.strip()
+        if not upload_token or not connect:
+            raise RuntimeError("managed container command credentials are unavailable")
+        return {"upload_token": upload_token, "connect_token": connect}
 
     def _discover(self) -> list[dict[str, str]]:
         result = self._docker("ps", "-aq", "--no-trunc", "--filter", "label=dynamic-opencode=true", check=False)
