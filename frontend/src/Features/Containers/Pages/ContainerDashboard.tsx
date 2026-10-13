@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
-import type { CreatedContainer, ManagedContainer } from '@/Features/Containers/Api/ContainerApi'
+import type { CommandEnvironment, CreatedContainer, ManagedContainer } from '@/Features/Containers/Api/ContainerApi'
 import { containerApi } from '@/Features/Containers/Api/ContainerApi'
 import { ApiError } from '@/Shared/Api/ApiError'
 
@@ -15,6 +15,11 @@ export function ContainerDashboard() {
   const [creating, setCreating] = useState(false)
   const [createdContainer, setCreatedContainer] = useState<CreatedContainer | null>(null)
   const [copyFeedback, setCopyFeedback] = useState('')
+  const [commandEnvironments, setCommandEnvironments] = useState<Record<string, CommandEnvironment>>({})
+  const [commands, setCommands] = useState<Record<string, string>>({})
+  const [commandLoading, setCommandLoading] = useState<Record<string, boolean>>({})
+  const [commandErrors, setCommandErrors] = useState<Record<string, string>>({})
+  const [copiedContainer, setCopiedContainer] = useState('')
 
   const loadContainers = useCallback(async () => {
     if (!token.trim() || loading) return
@@ -56,6 +61,37 @@ export function ContainerDashboard() {
   const copyValue = async (label: string, value: string) => {
     await navigator.clipboard.writeText(value)
     setCopyFeedback(`已複製 ${label}`)
+  }
+
+  const loadCommand = async (container: ManagedContainer, environment: CommandEnvironment) => {
+    setCommandEnvironments((current) => ({ ...current, [container.id]: environment }))
+    setCommandLoading((current) => ({ ...current, [container.id]: true }))
+    setCommandErrors((current) => ({ ...current, [container.id]: '' }))
+    setCommands((current) => ({ ...current, [container.id]: '' }))
+    setCopiedContainer('')
+    try {
+      const result = await containerApi.getCommands(container.id, environment, token.trim())
+      const command = result.connect_command
+      if (command) setCommands((current) => ({ ...current, [container.id]: command }))
+      else setCommandErrors((current) => ({ ...current, [container.id]: '目前無法取得容器連線指令。' }))
+    } catch (cause) {
+      const status = cause instanceof ApiError ? cause.status : undefined
+      setCommandErrors((current) => ({
+        ...current,
+        [container.id]: status === 401 ? '管理 token 無效，請確認後重試。' : '取得容器連線指令失敗，請稍後重試。',
+      }))
+    } finally {
+      setCommandLoading((current) => ({ ...current, [container.id]: false }))
+    }
+  }
+
+  const copyCommand = async (containerId: string) => {
+    try {
+      await navigator.clipboard.writeText(commands[containerId])
+      setCopiedContainer(containerId)
+    } catch {
+      setCommandErrors((current) => ({ ...current, [containerId]: '複製連線指令失敗。' }))
+    }
   }
 
   return (
@@ -129,6 +165,35 @@ export function ContainerDashboard() {
                       <p className="font-medium">{container.id}</p>
                       <p className="mt-2 text-sm">健康狀態：{container.status === 'healthy' ? '健康' : '異常'}</p>
                       <a className="mt-2 inline-block break-all text-violet-300 underline" href={container.url} rel="noreferrer" target="_blank">{container.url}</a>
+                      {container.connect_url && (
+                        <div className="mt-4 border-t border-zinc-800 pt-4">
+                          <a className="text-violet-300 underline" href={container.connect_url} rel="noopener noreferrer" target="_blank">開啟容器</a>
+                          <div className="mt-3 flex flex-wrap items-center gap-3">
+                            <label htmlFor={`environment-${container.id}`}>作業系統</label>
+                            <select
+                              className="rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2"
+                              disabled={commandLoading[container.id]}
+                              id={`environment-${container.id}`}
+                              onChange={(event) => loadCommand(container, event.target.value as CommandEnvironment)}
+                              value={commandEnvironments[container.id] ?? ''}
+                            >
+                              <option value="" disabled>選擇作業系統</option>
+                              <option value="mac">macOS</option>
+                              <option value="windows">Windows</option>
+                              <option value="linux">Linux</option>
+                            </select>
+                          </div>
+                          {commandLoading[container.id] && <p className="mt-2" role="status">正在取得連線指令…</p>}
+                          {commandErrors[container.id] && <p className="mt-2 text-red-200" role="alert">{commandErrors[container.id]}</p>}
+                          {commands[container.id] && (
+                            <div className="mt-3">
+                              <code className="block break-all rounded-lg bg-zinc-950 p-3">{commands[container.id]}</code>
+                              <button className="mt-2 rounded-lg border border-zinc-700 px-4 py-2" onClick={() => copyCommand(container.id)}>複製連線指令</button>
+                              {copiedContainer === container.id && <p className="mt-2 text-sm text-green-300" role="status">連線指令已複製</p>}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </li>
                   ))}
                 </ul>
