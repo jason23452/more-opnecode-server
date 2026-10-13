@@ -128,6 +128,7 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
     base_url = f"http://127.0.0.1:{api_port}"
     headers = {"Authorization": f"Bearer {admin_token}"}
     managed_ids: list[str] = []
+    tui_process = None
     try:
         deadline = time.monotonic() + 30
         last_failure = "backend did not start"
@@ -173,16 +174,26 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
                 f"uv tool dir --bin failed: stdout={tool_bin.stdout!r}, stderr={tool_bin.stderr!r}"
             )
             cli_executable = os.path.join(tool_bin.stdout.strip(), "opencode-project")
-            executable = subprocess.run(
+            tui_process = subprocess.Popen(
                 [cli_executable, "upload",
-                 "--url", payload["upload_url"], f"--token={payload['upload_token']}", "--project", project],
-                capture_output=True, text=True, timeout=360,
+                 "--url", payload["upload_url"], f"--token={payload['upload_token']}", "--project", project,
+                 "--connect-url", payload["connect_url"], "--connect-token", payload["connect_token"]],
+                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
             )
-            assert executable.returncode == 0, (
-                f"CLI upload failed (exit {executable.returncode}):\n"
-                f"stdout:\n{executable.stdout}\nstderr:\n{executable.stderr}\n"
-                f"upload_url={payload['upload_url']!r}, target={target_id!r}"
+            time.sleep(3)
+            assert tui_process.poll() is None, "upload-then-connect CLI exited before entering the remote TUI"
+            busy = subprocess.run(
+                [cli_executable, "connect", "--url", payload["connect_url"],
+                 "--token", payload["connect_token"]],
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
             )
+            assert busy.returncode != 0 and "已有 TUI 工作階段" in busy.stderr, (
+                f"second TUI session was not clearly refused: exit={busy.returncode}, stderr={busy.stderr!r}"
+            )
+            tui_process.stdin.write("\x03")
+            tui_process.stdin.flush()
+            tui_process.wait(timeout=10)
+            tui_process = None
 
         uploaded = subprocess.run(
             ["docker", "exec", target_id, "cat", "/workspace/project/upload-marker.txt"],
@@ -216,6 +227,9 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
             f"second container changed after target deletion: stderr={second_check.stderr!r}"
         )
     finally:
+        if tui_process and tui_process.poll() is None:
+            tui_process.terminate()
+            tui_process.wait(timeout=10)
         for container_id in managed_ids:
             try:
                 response = httpx.delete(base_url + f"/api/opencode/containers/{container_id}", headers=headers, timeout=30)

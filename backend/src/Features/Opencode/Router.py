@@ -1,8 +1,14 @@
+import asyncio
 import hmac
 import logging
+import os
+import select
+import subprocess
+
+from fastapi.security.utils import get_authorization_scheme_param
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, WebSocket, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
@@ -20,6 +26,9 @@ class ContainerCreated(BaseModel):
     upload_token: str
     cli_install_command: str = "uv tool install ./cli"
     upload_command: str
+    connect_url: str
+    connect_token: str
+    connect_command: str
 
 
 class ContainerStatus(BaseModel):
@@ -50,6 +59,7 @@ def create_container(
         result = request.app.state.container_manager.create()
     except Exception as error:
         raise _service_unavailable("Failed to create OpenCode container") from error
+    connect_token = result.pop("connect_token")
     return ContainerCreated(
         **result,
         upload_url=str(request.base_url).rstrip("/")
@@ -60,7 +70,71 @@ def create_container(
             + f"{request.app.state.settings.api_prefix}/opencode/containers/{result['id']}/upload"
             + f" --token={result['upload_token']} --project ."
         ),
+        connect_url=("ws" if request.url.scheme == "http" else "wss") + "://" + request.url.netloc
+        + f"{request.app.state.settings.api_prefix}/opencode/containers/{result['id']}/connect",
+        connect_token=connect_token,
+        connect_command=(
+            "opencode-project connect --url "
+            + (("ws" if request.url.scheme == "http" else "wss") + "://" + request.url.netloc)
+            + f"{request.app.state.settings.api_prefix}/opencode/containers/{result['id']}/connect"
+            + f" --token={connect_token}"
+        ),
     )
+
+
+@router.websocket("/{container_id}/connect")
+async def connect_tui(websocket: WebSocket, container_id: str) -> None:
+    scheme, token = get_authorization_scheme_param(websocket.headers.get("authorization", ""))
+    if scheme.lower() != "bearer":
+        token = ""
+    manager = websocket.app.state.container_manager
+    try:
+        session = manager.open_tui(container_id, token)
+    except PermissionError:
+        await websocket.close(code=4401, reason="連線授權無效，請使用建立容器時提供的連線資訊")
+        return
+    except LookupError:
+        await websocket.close(code=4404, reason="找不到此 OpenCode 容器")
+        return
+    except RuntimeError:
+        await websocket.close(code=4409, reason="此容器已有 TUI 工作階段，請稍後重試")
+        return
+
+    process = None
+    try:
+        await websocket.accept()
+        process = subprocess.Popen(
+            ["docker", "exec", "-it", container_id, "sh", "-lc", "cd /workspace/project && exec opencode ."],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        )
+        while process.poll() is None:
+            readable, _, _ = select.select([process.stdout], [], [], 0.05)
+            if readable:
+                output = os.read(process.stdout.fileno(), 65536)
+                if output:
+                    await websocket.send_bytes(output)
+            try:
+                message = await asyncio.wait_for(websocket.receive(), timeout=0.02)
+            except asyncio.TimeoutError:
+                continue
+            if message.get("type") == "websocket.disconnect":
+                break
+            data = message.get("bytes")
+            if data and process.stdin:
+                process.stdin.write(data)
+                process.stdin.flush()
+            elif message.get("text") == "\x04":
+                break
+    except Exception:
+        logger.info("Remote TUI session disconnected for %s", container_id)
+    finally:
+        if process and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+        manager.close_tui(session)
 
 
 @router.put("/{container_id}/upload", status_code=204)

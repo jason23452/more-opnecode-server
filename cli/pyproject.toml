@@ -7,6 +7,9 @@ name = "opencode-project"
 version = "0.1.0"
 description = "將本機專案資料夾上傳至 OpenCode 容器"
 requires-python = ">=3.10"
+dependencies = [
+    "websockets>=16.1.1",
+]
 
 [project.scripts]
 opencode-project = "opencode_project.cli:main"

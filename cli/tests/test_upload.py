@@ -38,6 +38,34 @@ class UploadTests(unittest.TestCase):
         self.assertEqual(sender.call_count, 2)
         self.assertEqual(sender.call_args_list[0].args, sender.call_args_list[1].args)
 
+    def test_connect_relays_terminal_input_and_displays_remote_output(self):
+        from opencode_project.connect import connect_terminal
+
+        remote = unittest.mock.MagicMock()
+        remote.__enter__.return_value = remote
+        remote.recv.side_effect = [b"remote TUI", KeyboardInterrupt()]
+        with patch("opencode_project.connect.websocket_connect", return_value=remote) as connector, \
+                patch("opencode_project.connect._terminal_input", return_value=None):
+            connect_terminal("ws://api/connect", "scoped-token")
+        connector.assert_called_once_with(
+            "ws://api/connect", additional_headers={"Authorization": "Bearer scoped-token"},
+            max_size=None, ping_interval=20,
+        )
+        self.assertEqual(remote.recv.call_count, 2)
+
+    def test_upload_then_connect_only_connects_after_successful_upload(self):
+        from opencode_project.cli import main
+
+        with patch("opencode_project.cli.create_archive", return_value=b"zip"), \
+                patch("opencode_project.cli.upload_archive") as upload, \
+                patch("opencode_project.cli.connect_terminal") as connect, \
+                patch("sys.argv", ["opencode-project", "upload", "--url", "https://api/upload",
+                                    "--token", "upload-token", "--project", ".", "--connect-url",
+                                    "wss://api/connect", "--connect-token", "connect-token"]):
+            main()
+        self.assertLess(upload.call_count, 2)
+        connect.assert_called_once_with("wss://api/connect", "connect-token")
+
 
 if __name__ == "__main__":
     unittest.main()
