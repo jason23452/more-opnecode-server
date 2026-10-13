@@ -59,7 +59,10 @@ def test_opencode_management_docs_expose_bearer_authorization_scheme() -> None:
 
 def test_create_opencode_waits_for_ready_container_and_hides_password() -> None:
     manager = Mock(spec=ContainerManager)
-    manager.create.return_value = {"id": "oc-123", "url": "https://quiet-fox.trycloudflare.com"}
+    manager.create.return_value = {
+        "id": "oc-123", "url": "https://quiet-fox.trycloudflare.com",
+        "upload_token": "container-upload-token",
+    }
     app.state.container_manager = manager
     settings = Settings(opencode_password="shared-secret", opencode_admin_token="admin-secret")
     app.state.settings = settings
@@ -67,8 +70,33 @@ def test_create_opencode_waits_for_ready_container_and_hides_password() -> None:
     response = client.post("/api/opencode/containers", headers={"Authorization": "Bearer admin-secret"})
 
     assert response.status_code == 201
-    assert response.json() == {"id": "oc-123", "url": "https://quiet-fox.trycloudflare.com"}
+    assert response.json() == {
+        "id": "oc-123", "url": "https://quiet-fox.trycloudflare.com",
+        "upload_url": "http://testserver/api/opencode/containers/oc-123/upload",
+        "upload_token": "container-upload-token",
+        "cli_install_command": "python -m pip install ./cli",
+        "upload_command": "opencode-project upload --url http://testserver/api/opencode/containers/oc-123/upload --token container-upload-token --project .",
+    }
     assert "shared-secret" not in response.text
+
+
+def test_upload_api_requires_container_token_and_writes_only_to_target_workspace() -> None:
+    manager = Mock(spec=ContainerManager)
+    manager.upload.return_value = None
+    app.state.container_manager = manager
+    app.state.settings = Settings(opencode_admin_token="admin-secret")
+    archive = b"project archive"
+
+    denied = client.put("/api/opencode/containers/oc-123/upload", content=archive)
+    uploaded = client.put(
+        "/api/opencode/containers/oc-123/upload",
+        content=archive,
+        headers={"Authorization": "Bearer container-upload-token", "Content-Type": "application/gzip"},
+    )
+
+    assert denied.status_code == 401
+    assert uploaded.status_code == 204
+    manager.upload.assert_called_once_with("oc-123", "container-upload-token", archive)
 
 
 def test_create_opencode_reports_capacity_limit_without_starting_container() -> None:
@@ -297,10 +325,14 @@ def test_container_manager_create_applies_configured_cpu_memory_and_capacity_lim
 
     result = manager.create()
 
-    assert result == {"id": "new-container", "url": "https://new.trycloudflare.com"}
+    assert result["id"] == "new-container"
+    assert result["url"] == "https://new.trycloudflare.com"
+    assert result["upload_token"]
     run_args = manager._docker.call_args_list[1].args
     assert "--cpus" in run_args and "1.5" in run_args
     assert "--memory" in run_args and "3g" in run_args
+    token_label = next(arg for arg in run_args if arg.startswith("dynamic-opencode-upload-token="))
+    assert len(token_label.partition("=")[2]) >= 32
 
 
 def test_create_then_immediate_list_keeps_initialized_tunnel_healthy() -> None:
@@ -464,6 +496,43 @@ def test_container_manager_uses_full_ids_when_checking_creation_capacity() -> No
     assert manager._docker.call_args_list[0].args == (
         "ps", "-q", "--no-trunc", "--filter", "label=dynamic-opencode=true",
     )
+
+
+def test_container_manager_upload_rejects_wrong_container_capability_without_writing() -> None:
+    manager = ContainerManager(Settings())
+    manager._docker = Mock(return_value=CompletedProcess([], 0, "expected-token\n", ""))
+
+    try:
+        manager.upload("oc-target", "wrong-token", b"PK archive")
+    except PermissionError:
+        pass
+    else:
+        raise AssertionError("a different container's capability must not authorize upload")
+
+    manager._docker.assert_called_once_with(
+        "inspect", "-f", '{{ index .Config.Labels "dynamic-opencode-upload-token" }}',
+        "oc-target", check=False,
+    )
+
+
+def test_container_manager_upload_rejects_archive_path_traversal_before_container_write() -> None:
+    import io
+    import zipfile
+
+    manager = ContainerManager(Settings())
+    manager._docker = Mock(return_value=CompletedProcess([], 0, "expected-token\n", ""))
+    malicious = io.BytesIO()
+    with zipfile.ZipFile(malicious, "w") as archive:
+        archive.writestr("../outside.txt", "must not escape workspace")
+
+    try:
+        manager.upload("oc-target", "expected-token", malicious.getvalue())
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("archive paths must not escape the target container workspace")
+
+    manager._docker.assert_called_once()
 
 
 def test_container_manager_cleans_up_container_when_initialization_times_out() -> None:

@@ -1,6 +1,7 @@
 """Opt-in black-box test requiring Docker and outbound Cloudflare access."""
 
 import os
+import tempfile
 import subprocess
 import sys
 import time
@@ -130,6 +131,7 @@ def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
     )
     base_url = f"http://127.0.0.1:{api_port}"
     container_id = None
+    second_container_id = None
     try:
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
@@ -145,9 +147,37 @@ def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
         payload = response.json()
         container_id = payload["id"]
         assert "url" in payload
+        assert payload["upload_token"]
+        assert payload["upload_url"].endswith(f"/api/opencode/containers/{container_id}/upload")
         assert password not in response.text
         reachable = _probe_external_url(payload["url"], password)
         assert reachable.status_code == 200
+        with tempfile.TemporaryDirectory() as project:
+            project_path = os.path.join(project, "upload-marker.txt")
+            marker = f"uploaded-{uuid.uuid4().hex}"
+            with open(project_path, "w", encoding="utf-8") as source:
+                source.write(marker)
+            cli_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../cli"))
+            subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", cli_root], check=True)
+            subprocess.run([
+                sys.executable, "-m", "opencode_project.cli", "upload",
+                "--url", payload["upload_url"], "--token", payload["upload_token"],
+                "--project", project,
+            ], check=True)
+            assert subprocess.run([
+                "docker", "exec", container_id, "cat", "/workspace/project/upload-marker.txt",
+            ], capture_output=True, text=True, check=True).stdout == marker
+        second = httpx.post(
+            base_url + "/api/opencode/containers", headers={"Authorization": f"Bearer {admin_token}"},
+            timeout=360,
+        )
+        assert second.status_code == 201, second.text
+        second_container_id = second.json()["id"]
+        assert second_container_id != container_id
+        assert subprocess.run([
+            "docker", "exec", second_container_id, "test", "!", "-e",
+            "/workspace/project/upload-marker.txt",
+        ], capture_output=True).returncode == 0
         headers = {"Authorization": f"Bearer {admin_token}"}
         invalid_headers = {"Authorization": "Bearer invalid-management-token"}
         for method, path in (
@@ -244,5 +274,7 @@ def test_management_api_creates_reachable_opencode_quick_tunnel() -> None:
     finally:
         if container_id:
             subprocess.run(["docker", "rm", "-f", container_id], check=False, capture_output=True)
+        if second_container_id:
+            subprocess.run(["docker", "rm", "-f", second_container_id], check=False, capture_output=True)
         process.terminate()
         process.wait(timeout=10)
