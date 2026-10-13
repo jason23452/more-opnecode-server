@@ -16,6 +16,10 @@ _SAFE_SERVICE_ERROR = "OpenCode 容器服務暫時無法使用"
 class ContainerCreated(BaseModel):
     id: str
     url: str
+    upload_url: str
+    upload_token: str
+    cli_install_command: str = "python -m pip install ./cli"
+    upload_command: str
 
 
 class ContainerStatus(BaseModel):
@@ -46,7 +50,42 @@ def create_container(
         result = request.app.state.container_manager.create()
     except Exception as error:
         raise _service_unavailable("Failed to create OpenCode container") from error
-    return ContainerCreated(**result)
+    return ContainerCreated(
+        **result,
+        upload_url=str(request.base_url).rstrip("/")
+        + f"{request.app.state.settings.api_prefix}/opencode/containers/{result['id']}/upload",
+        upload_command=(
+            "opencode-project upload --url "
+            + str(request.base_url).rstrip("/")
+            + f"{request.app.state.settings.api_prefix}/opencode/containers/{result['id']}/upload"
+            + f" --token {result['upload_token']} --project ."
+        ),
+    )
+
+
+@router.put("/{container_id}/upload", status_code=204)
+async def upload_project(
+    container_id: str,
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> Response:
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Container upload token required")
+    archive = await request.body()
+    if len(archive) > 512 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Project archive exceeds 512 MiB")
+    token = credentials.credentials if credentials else ""
+    try:
+        request.app.state.container_manager.upload(container_id, token, archive)
+    except PermissionError as error:
+        raise HTTPException(status_code=401, detail="Invalid container upload token") from error
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail="Managed container not found") from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail="Invalid project archive") from error
+    except Exception as error:
+        raise _service_unavailable("Failed to upload project to container %s", container_id) from error
+    return Response(status_code=204)
 
 
 @router.get("", response_model=list[ContainerStatus])
