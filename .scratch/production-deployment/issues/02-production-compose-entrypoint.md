@@ -1,0 +1,14 @@
+# 02: 建立前後端正式部署 Compose 與單一服務入口
+
+**What to build:** 維護者可使用正式 Compose 啟動前端與 API 後端，使用者透過單一服務入口存取前端與 API；API 仍能透過部署主機 Docker 管理 OpenCode 容器，正式部署設定可解析並接收部署環境設定。
+
+**Blocked by:** 01: 建立前後端容器映像與本機整合驗證.
+
+**Status:** ready-for-agent
+
+- [ ] 正式 Compose 可使用 01 建立的前端與 API 後端 production 容器映像啟動服務。
+- [ ] 前端與 `/api` API 請求可由單一對外服務入口提供，前端以 runtime config 使用同源相對 API 路徑。
+- [ ] API 後端保有透過同主機 Docker daemon 管理 OpenCode 容器的能力。
+- [ ] 正式服務所需機密與環境設定由部署環境提供，不需提交機密至 repository。
+- [ ] 正式 Compose 可在未提供真實機密值的本機情境下以適當佔位值解析驗證。
+- [ ] 正式 Compose 不將 OpenCode 容器或 Cloudflare Quick Tunnel 定義為固定的應用服務。
