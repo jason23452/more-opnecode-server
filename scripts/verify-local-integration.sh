@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_FILE="${ROOT_DIR}/compose.local.yaml"
+PRODUCTION_COMPOSE_FILE="${ROOT_DIR}/docker-compose.yaml.prod"
 PROJECT_NAME="${COMPOSE_PROJECT_NAME:-production-images-verify}"
 FRONTEND_URL="${FRONTEND_URL:-http://localhost:${FRONTEND_PORT:-3000}/}"
 API_HEALTH_URL="${API_HEALTH_URL:-http://localhost:${BACKEND_PORT:-8000}/api/health}"
@@ -19,6 +20,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
+OPENCODE_PASSWORD=local-compose-validation-only \
+OPENCODE_ADMIN_TOKEN=local-compose-validation-only \
+  docker compose -f "${PRODUCTION_COMPOSE_FILE}" config --quiet
 compose config --quiet
 compose build
 compose up --detach

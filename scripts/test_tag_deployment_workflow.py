@@ -1,39 +1,79 @@
+import os
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
 
-WORKFLOW = Path(__file__).parents[1] / ".github/workflows/tag-deployment.yml"
+ROOT = Path(__file__).parents[1]
+DEPLOY_SCRIPT = ROOT / "scripts/deploy-production.sh"
 
 
-class TagDeploymentWorkflowTests(unittest.TestCase):
-    def test_deploys_only_version_tags_on_the_production_runner(self):
-        workflow = WORKFLOW.read_text()
+def run(command, *, cwd, env=None):
+    return subprocess.run(command, cwd=cwd, env=env, text=True, capture_output=True)
 
-        self.assertIn('      - "v*"', workflow)
-        self.assertIn("runs-on: bojii-system", workflow)
-        self.assertNotIn("branches:", workflow)
 
-    def test_updates_the_existing_checkout_without_cleaning_host_configuration(self):
-        workflow = WORKFLOW.read_text()
+class ProductionDeploymentTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.remote = self.root / "remote.git"
+        self.checkout = self.root / "checkout"
+        run(["git", "init", "--bare", str(self.remote)], cwd=self.root).check_returncode()
+        run(["git", "init", str(self.checkout)], cwd=self.root).check_returncode()
+        run(["git", "config", "user.email", "deploy-test@example.com"], cwd=self.checkout).check_returncode()
+        run(["git", "config", "user.name", "Deploy Test"], cwd=self.checkout).check_returncode()
+        (self.checkout / "docker-compose.yaml.prod").write_text("tagged production compose\n")
+        (self.checkout / "scripts").mkdir()
+        (self.checkout / "scripts/deploy-production.sh").write_text(DEPLOY_SCRIPT.read_text())
+        (self.checkout / "scripts/deploy-production.sh").chmod(0o755)
+        (self.checkout / ".gitignore").write_text(".env\ndocker-compose.yaml\n")
+        (self.checkout / ".env").write_text("host-local-setting=preserve\n")
+        (self.checkout / "docker-compose.yaml").write_text("host-local-compose=preserve\n")
+        run(["git", "add", ".gitignore", "docker-compose.yaml.prod", "scripts/deploy-production.sh"], cwd=self.checkout).check_returncode()
+        run(["git", "commit", "-m", "release"], cwd=self.checkout).check_returncode()
+        run(["git", "tag", "v1.2.3"], cwd=self.checkout).check_returncode()
+        run(["git", "remote", "add", "origin", str(self.remote)], cwd=self.checkout).check_returncode()
+        run(["git", "push", "origin", "HEAD", "refs/tags/v1.2.3"], cwd=self.checkout).check_returncode()
+        (self.checkout / "docker-compose.yaml.prod").write_text("newer branch compose\n")
+        run(["git", "commit", "-am", "newer than release tag"], cwd=self.checkout).check_returncode()
+        run(["git", "push", "origin", "HEAD"], cwd=self.checkout).check_returncode()
+        run(["git", "checkout", "--detach", "HEAD"], cwd=self.checkout).check_returncode()
+        (self.checkout / "docker-compose.yaml").write_text("host-local-compose=preserve\n")
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        self.docker_log = self.root / "docker.log"
+        docker = self.bin / "docker"
+        docker.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$DOCKER_LOG"\nexit "${DOCKER_EXIT:-0}"\n')
+        docker.chmod(0o755)
+        self.env = os.environ | {
+            "DEPLOY_REPOSITORY": str(self.checkout),
+            "DEPLOY_TAG": "v1.2.3",
+            "OPENCODE_PASSWORD": "throwaway-password",
+            "OPENCODE_ADMIN_TOKEN": "throwaway-token",
+            "DOCKER_LOG": str(self.docker_log),
+            "PATH": f"{self.bin}:{os.environ['PATH']}",
+        }
 
-        self.assertIn("/home/bojii/more-opencode-server", workflow)
-        self.assertIn('refs/tags/${GITHUB_REF_NAME}', workflow)
-        self.assertNotIn("git clean", workflow)
+    def tearDown(self):
+        self.temp.cleanup()
 
-    def test_uses_host_compose_copy_and_fails_fast_with_environment_secrets(self):
-        workflow = WORKFLOW.read_text()
+    def deploy(self, **updates):
+        return run([str(self.checkout / "scripts/deploy-production.sh")], cwd=self.root, env=self.env | updates)
 
-        self.assertIn("docker-compose.yaml.prod", workflow)
-        self.assertIn("docker-compose.yaml", workflow)
-        self.assertIn("docker compose build", workflow)
-        self.assertIn("docker compose up -d", workflow)
-        self.assertIn("environment: production", workflow)
-        self.assertIn("OPENCODE_PASSWORD: ${{ secrets.OPENCODE_PASSWORD }}", workflow)
-        self.assertIn("OPENCODE_ADMIN_TOKEN: ${{ secrets.OPENCODE_ADMIN_TOKEN }}", workflow)
-        self.assertIn('"${OPENCODE_PASSWORD:?', workflow)
-        self.assertIn('"${OPENCODE_ADMIN_TOKEN:?', workflow)
-        self.assertIn("set -euo pipefail", workflow)
-        self.assertNotIn("continue-on-error: true", workflow)
+    def test_checks_out_tag_copies_compose_preserves_host_settings_and_runs_compose(self):
+        result = self.deploy()
+
+        self.assertEqual(result.returncode, 0, f"stdout={result.stdout}\nstderr={result.stderr}")
+        self.assertEqual(run(["git", "describe", "--tags", "--exact-match"], cwd=self.checkout).stdout.strip(), "v1.2.3")
+        self.assertEqual((self.checkout / "docker-compose.yaml").read_text(), "tagged production compose\n")
+        self.assertEqual((self.checkout / ".env").read_text(), "host-local-setting=preserve\n")
+        self.assertEqual(self.docker_log.read_text().splitlines(), ["compose build", "compose up -d"])
+
+    def test_compose_failure_propagates(self):
+        result = self.deploy(DOCKER_EXIT="47")
+
+        self.assertEqual(result.returncode, 47)
 
 
 if __name__ == "__main__":

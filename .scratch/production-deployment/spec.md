@@ -10,7 +10,7 @@ Status: ready-for-agent
 
 提供正式部署 Compose 設定與本機整合驗證 Compose 設定，並為前端及 API 後端提供正式容器映像建置方式。新增 GitHub Actions，在符合 `v*` 的版本 tag 建立時，使用標籤為 `bojii-system` 的 self-hosted runner，更新既有工作目錄至該 tag、將正式 Compose 設定複製成部署時使用的標準 Compose 檔，並建置及啟動服務。
 
-正式部署由單一服務入口提供前端與 API 存取。部署所需機密由 GitHub Secrets 提供，不提交至 repository。domain、TLS、反向代理細節及 Secrets 名稱和值在本規格中保留為部署設定，不預設其具體值。
+正式部署由單一服務入口提供前端與 API 存取；目前入口只綁定部署主機 loopback，供主機上的一個可信服務入口轉送前端與 API 請求。外部 trusted ingress、VPN 與認證設定仍延後處理，不由本次部署直接公開 host port。部署所需機密由 GitHub Secrets 提供，不提交至 repository。
 
 ## User Stories
 
@@ -43,13 +43,13 @@ Status: ready-for-agent
 - 提供正式部署 Compose 設定，服務範圍只包含前端與 API 後端；OpenCode 容器仍由 API 後端依既有領域設計透過同主機 Docker 管理，不作為固定的 Compose 應用服務啟動。
 - 正式部署另外提供本機整合驗證 Compose 設定，服務範圍同樣只包含前端與 API 後端；本機設定可提供建置來源、連接埠及驗證所需差異，但服務契約與正式版一致。
 - 前端與 API 後端各自提供 production 容器建置方式。前端需保留既有 runtime config 能力，讓 API base URL 可在部署時指向同一服務入口下的相對 `/api` 路徑；API 沿用既有 `/api` 前綴及健康端點。
-- Compose 的正式服務拓撲以單一對外服務入口呈現前端及 API。對外入口實際如何透過反向代理/TLS/domain 實現，以及使用哪些公開連接埠，尚待維護者提供部署環境設定。
+- Compose 的正式服務拓撲以單一服務入口呈現前端及 API；入口 host bind 僅限 loopback，不直接公開於外部介面。主機本機單一可信服務入口負責轉送流量；外部 trusted ingress、VPN、認證、TLS 與 domain 設定延後至部署環境配置，不在本次範圍內。
 - API 後端必須能呼叫部署主機 Docker daemon，維持既有由同主機 Docker 管理 OpenCode 容器的架構。不得將此應用服務與 OpenCode 容器領域概念混為一談。
 - GitHub Actions 以 `v*` tag 作為部署觸發條件，並限制部署工作在標籤 `bojii-system` 的 self-hosted runner 上執行。
 - 部署 workflow 更新 `/home/bojii/more-opencode-server` 既有 repository 工作目錄至觸發的 tag；更新方式需保留部署所需但不納入版本控制的環境設定。workflow 將正式 Compose 設定複製為 `docker-compose.yaml`，然後執行服務建置與背景啟動。
 - 複製出的 `docker-compose.yaml` 是部署主機工作目錄中的執行產物，不回寫或 commit 至 repository。
 - 部署機密由 GitHub Secrets 提供；Secrets 的名稱、必要值清單及注入方式需配合維護者稍後提供的部署配置定義。規格不假設任何具體憑證值。
-- 在本機提供單一整合驗證入口，涵蓋本機 Compose 與正式 Compose 設定解析、本機映像建置、服務啟動、前端服務入口 HTTP 回應及 API 健康端點可用性，並清理驗證啟動的服務。
+- 在本機提供單一整合驗證入口，涵蓋本機 Compose 與正式 Compose 設定解析（正式設定解析時使用非機密 throwaway 驗證值）、本機映像建置、服務啟動、前端服務入口 HTTP 回應及 API 健康端點可用性，並清理驗證啟動的服務。
 - 遵循既有 ADR「使用 Docker OpenCode 容器與 Cloudflare Quick Tunnel」：本次新增的前後端正式部署不改變 API 後端於同主機 Docker 建立 OpenCode 容器、容器內使用 Cloudflare Quick Tunnel 的既有架構。
 - 不新增產品 API 或資料庫；本功能的主要修改範圍為容器建置、Compose 部署描述、本機整合驗證入口及 GitHub Actions 部署流程。
 
@@ -68,7 +68,7 @@ Status: ready-for-agent
 - Kubernetes、雲端容器平台、映像 Registry 發佈流程或多主機部署。
 - 非 tag 發布的自動正式部署、任意 tag 部署或手動審批環節。
 - 自動提交部署主機產生的 `docker-compose.yaml` 回 repository。
-- 在本規格中決定正式 domain、TLS 憑證、反向代理產品/設定、公開 port 或 GitHub Secrets 的具體名稱與值。
+- 在本規格中決定正式 domain、TLS 憑證、外部 trusted ingress、VPN/認證設定或 GitHub Secrets 的具體值；正式服務入口不得直接綁定公開 host 介面。
 - 建立資料庫、遷移資料或改動前後端產品功能/API 契約。
 - 在本機整合驗證中啟動 OpenCode 容器或 Cloudflare Quick Tunnel。
 

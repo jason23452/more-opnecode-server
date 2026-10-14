@@ -17,16 +17,13 @@ jobs:
       OPENCODE_PASSWORD: ${{ secrets.OPENCODE_PASSWORD }}
       OPENCODE_ADMIN_TOKEN: ${{ secrets.OPENCODE_ADMIN_TOKEN }}
     steps:
+      - name: Check out triggering release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
       - name: Update production checkout and deploy
         shell: bash
         run: |
           set -euo pipefail
-          : "${OPENCODE_PASSWORD:?OPENCODE_PASSWORD must be configured in the production environment secrets}"
-          : "${OPENCODE_ADMIN_TOKEN:?OPENCODE_ADMIN_TOKEN must be configured in the production environment secrets}"
-
-          cd /home/bojii/more-opencode-server
-          git fetch --no-tags origin "refs/tags/${GITHUB_REF_NAME}"
-          git checkout --force --detach "refs/tags/${GITHUB_REF_NAME}"
-          cp docker-compose.yaml.prod docker-compose.yaml
-          docker compose build
-          docker compose up -d
+          DEPLOY_TAG="${GITHUB_REF_NAME}" scripts/deploy-production.sh
