@@ -11,6 +11,7 @@ import subprocess
 import threading
 import uuid
 from pathlib import Path
+from contextlib import suppress
 
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.server import ServerConnection, serve
@@ -74,7 +75,10 @@ def relay(connection: ServerConnection) -> None:
 
     process = None
     resize_write = None
+    active_marker = Path(os.environ.get("OPENCODE_TUI_ACTIVE_MARKER", "/run/opencode/tui-active"))
     try:
+        active_marker.parent.mkdir(parents=True, exist_ok=True)
+        active_marker.touch(mode=0o600, exist_ok=True)
         os.makedirs("/workspace/project", exist_ok=True)
         resize_read, resize_write = os.pipe()
         process = subprocess.Popen(
@@ -123,11 +127,14 @@ def relay(connection: ServerConnection) -> None:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
+        with suppress(FileNotFoundError):
+            active_marker.unlink()
         with _SESSION_LOCK:
             _SESSION_ACTIVE = False
 
 
 def main() -> None:
+    Path(os.environ.get("OPENCODE_TUI_ACTIVE_MARKER", "/run/opencode/tui-active")).unlink(missing_ok=True)
     server = serve(relay, "127.0.0.1", 4098, max_size=None, ping_interval=20)
     server.serve_forever()
 
