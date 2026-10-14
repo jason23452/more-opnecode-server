@@ -123,6 +123,7 @@ def test_receiver_installs_remote_scoped_ssh_key_outside_project_config(tmp_path
     home = tmp_path / "home"
     monkeypatch.setenv("OPENCODE_SSH_CREDENTIAL_DIR", str(credential_dir))
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "global-gitconfig"))
     key = "-----BEGIN OPENSSH PRIVATE KEY-----\nprivate\n-----END OPENSSH PRIVATE KEY-----\n"
 
     receiver.install_git_ssh_credentials(remote, {"private_key": key, "key_name": "id_ed25519"}, project)
@@ -130,9 +131,11 @@ def test_receiver_installs_remote_scoped_ssh_key_outside_project_config(tmp_path
     assert (credential_dir / "id_ed25519").read_text() == key
     assert (credential_dir / "id_ed25519").stat().st_mode & 0o777 == 0o600
     assert "private" not in (project / ".git" / "config").read_text()
-    ssh_command = subprocess.run(["git", "config", "--global", "--get", "core.sshCommand"],
+    ssh_command = subprocess.run(["git", "-C", str(project), "config", "--get", "core.sshCommand"],
                                  check=True, capture_output=True, text=True).stdout.strip()
     assert ssh_command == str(credential_dir / "git-ssh")
+    assert subprocess.run(["git", "config", "--global", "--get", "core.sshCommand"],
+                          capture_output=True, text=True).returncode != 0
     denied = subprocess.run([ssh_command, "other@git.example", "git-receive-pack 'team/repo.git'"],
                             capture_output=True, text=True)
     assert denied.returncode == 126
@@ -159,6 +162,28 @@ def test_receiver_installs_remote_scoped_ssh_key_outside_project_config(tmp_path
                           check=True, capture_output=True, text=True).stdout.strip() == subprocess.run(
                               ["git", "-C", str(project), "rev-parse", "HEAD"],
                               check=True, capture_output=True, text=True).stdout.strip()
+
+
+def test_ssh_remote_association_ignores_scp_style_password_userinfo(tmp_path, monkeypatch) -> None:
+    import src.Features.Opencode.upload_receiver as receiver
+
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(["git", "init", "-q", str(project)], check=True)
+    remote = "git:scp-secret@git.example:team/repo.git"
+    subprocess.run(["git", "-C", str(project), "remote", "add", "origin", remote], check=True)
+    monkeypatch.setenv("OPENCODE_SSH_CREDENTIAL_DIR", str(tmp_path / "runtime" / "ssh"))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "global-gitconfig"))
+
+    receiver.install_git_ssh_credentials(
+        remote,
+        {"private_key": "-----BEGIN OPENSSH PRIVATE KEY-----\nprivate\n-----END OPENSSH PRIVATE KEY-----\n",
+         "key_name": "id_ed25519"},
+        project,
+    )
+
+    assert subprocess.run(["git", "-C", str(project), "config", "--get", "core.sshCommand"],
+                          check=True, capture_output=True, text=True).stdout.strip().endswith("/git-ssh")
 
 
 def test_git_credential_upload_requires_container_upload_token(tmp_path, monkeypatch) -> None:

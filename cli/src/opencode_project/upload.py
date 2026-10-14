@@ -57,12 +57,7 @@ def create_archive(project: Path) -> Path:
                     continue
                 if relative == ".git/config":
                     contents = path.read_bytes()
-                    contents = re.sub(
-                        rb"(https?://|ssh://)[^/@\s]+@",
-                        rb"\1",
-                        contents,
-                        flags=re.IGNORECASE,
-                    )
+                    contents = _sanitize_git_config(contents)
                     archive.writestr(relative, contents)
                 else:
                     archive.write(path, relative)
@@ -133,11 +128,42 @@ def _ssh_remote(remote: str) -> bool:
 
     return (remote.startswith("git@") or remote.startswith("ssh://") or
             (urlsplit(remote).scheme == "ssh" and bool(urlsplit(remote).hostname)) or
-            bool(re.fullmatch(r"[^@/:]+@[^/:]+:.+", remote)))
+            bool(re.fullmatch(r"[^@/:]+(?::[^@/:]+)?@[^/:]+:.+", remote)))
+
+
+def sanitize_remote(remote: str) -> str:
+    """Remove embedded secrets while preserving SSH usernames and route components."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    parsed = urlsplit(remote)
+    if parsed.scheme.lower() in {"https", "http", "ssh"} and parsed.hostname:
+        userinfo = f"{parsed.username}@" if parsed.username and parsed.scheme.lower() == "ssh" else ""
+        host = parsed.hostname
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        if parsed.port:
+            host += f":{parsed.port}"
+        netloc = userinfo + host
+        return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+    match = re.fullmatch(r"(?P<userinfo>[^/@]+)@(?P<host>[^/:]+):(?P<path>.+)", remote)
+    if match and ":" in match.group("userinfo"):
+        user = match.group("userinfo").split(":", 1)[0]
+        return f"{user}@{match.group('host')}:{match.group('path')}"
+    return remote
+
+
+def _sanitize_git_config(contents: bytes) -> bytes:
+    contents = re.sub(
+        rb"(?i)(https?://|ssh://)([^:/@\s]+):[^/@\s]*@",
+        rb"\1\2@",
+        contents,
+    )
+    contents = re.sub(rb"(?i)(https?://)[^/@\s]+@", rb"\1", contents)
+    return re.sub(rb"([^\s=:@]+):[^\s/@]+@([^\s/:]+):", rb"\1@\2:", contents)
 
 
 def git_ssh_credentials(project: Path) -> tuple[str, dict[str, str]] | None:
-    """Return the origin SSH remote and an available, unencrypted identity file."""
+    """Return the origin SSH remote and an available unencrypted identity file."""
     try:
         remote = subprocess.run(
             ["git", "-C", str(project), "remote", "get-url", "origin"],
@@ -171,9 +197,18 @@ def git_ssh_credentials(project: Path) -> tuple[str, dict[str, str]] | None:
             private_key = path.read_text()
         except (OSError, UnicodeError):
             continue
-        if "PRIVATE KEY-----" not in private_key or "ENCRYPTED" in private_key:
+        if "PRIVATE KEY-----" not in private_key:
             continue
+        if "ENCRYPTED" in private_key:
+            return remote, {"unsupported": f"偵測到加密 SSH 私鑰 {path.name}；目前不會傳送私鑰或其解密密碼。"}
         return remote, {"private_key": private_key, "key_name": path.name}
+    if os.environ.get("SSH_AUTH_SOCK"):
+        try:
+            identities = subprocess.run(["ssh-add", "-L"], capture_output=True, text=True, check=True)
+        except (OSError, subprocess.CalledProcessError):
+            identities = None
+        if identities and identities.stdout.strip():
+            return remote, {"unsupported": "偵測到 ssh-agent 身分；目前 Tunnel 尚未提供即時 agent 轉送，因此不會宣稱遠端可使用該身分。"}
     return remote, {}
 
 
