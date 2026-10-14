@@ -50,7 +50,7 @@ Status: ready-for-agent
 - GitHub Actions 使用兩階段工作：GitHub-hosted runner 建置並以 production environment 的 `GHCR_PAT` classic personal access token 發布 GHCR 映像；發布成功後，使用名稱為 `bojii-system`、labels 為 `self-hosted`、`Linux`、`X64`、`more-opencode-server` 的 runner 登入 GHCR 並部署。PAT 至少需具備 `read:packages` 與 `write:packages` scope；存取 private repository package 時另需適當 repository 權限。
 - 部署 workflow 確保 `/home/bojii/more-opencode-server` 是目標 repository 工作目錄（若該目錄尚無 Git metadata，先初始化），更新至觸發的 tag 並保留未納入版本控制的部署設定。workflow 將 `docker-compose.prod.yaml` 複製為 `docker-compose.yaml`，登入 GHCR、執行 `docker compose pull`，再以 `docker compose up -d` 啟動服務；正式部署不得執行 `docker compose build`。
 - 複製出的 `docker-compose.yaml` 是部署主機工作目錄中的執行產物，不回寫或 commit 至 repository。
-- 部署機密由 GitHub production environment secrets 提供：`GHCR_PAT` 用於讀寫 GHCR，`OPENCODE_PASSWORD` 與 `OPENCODE_ADMIN_TOKEN` 用於後端應用設定。這些 secret 的正式值不納入規格或版本控制。
+- 部署機密由 GitHub production environment secrets 提供：`GHCR_PAT` 用於讀寫 GHCR，`OPENCODE_PASSWORD` 與 `OPENCODE_ADMIN_TOKEN` 用於後端應用設定。部署 workflow 將後端兩項機密保存到部署工作目錄中權限為 `0600`、且不納入版本控制的 `.env`，讓主機後續手動執行 Compose 命令也能載入必要設定。
 - 在本機提供單一整合驗證入口，涵蓋本機 Compose 與正式 Compose 設定解析（正式設定解析時使用非機密 throwaway 驗證值）、本機映像建置、服務啟動、前端服務入口 HTTP 回應及 API 健康端點可用性，並清理驗證啟動的服務。
 - 遵循既有 ADR「使用 Docker OpenCode 容器與 Cloudflare Quick Tunnel」：本次新增的前後端正式部署不改變 API 後端於同主機 Docker 建立 OpenCode 容器、容器內使用 Cloudflare Quick Tunnel 的既有架構。
 - 不新增產品 API 或資料庫；本功能的主要修改範圍為容器建置、Compose 部署描述、本機整合驗證入口及 GitHub Actions 部署流程。

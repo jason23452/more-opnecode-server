@@ -51,7 +51,7 @@ class ProductionDeploymentTests(unittest.TestCase):
             "DEPLOY_REMOTE": str(self.remote),
             "DEPLOY_TAG": "v1.2.3",
             "OPENCODE_PASSWORD": "throwaway-password",
-            "OPENCODE_ADMIN_TOKEN": "throwaway-token",
+            "OPENCODE_ADMIN_TOKEN": "731942",
             "DOCKER_LOG": str(self.docker_log),
             "PATH": f"{self.bin}:{os.environ['PATH']}",
         }
@@ -68,7 +68,13 @@ class ProductionDeploymentTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, f"stdout={result.stdout}\nstderr={result.stderr}")
         self.assertEqual(run(["git", "describe", "--tags", "--exact-match"], cwd=self.checkout).stdout.strip(), "v1.2.3")
         self.assertEqual((self.checkout / "docker-compose.yaml").read_text(), "tagged production compose\n")
-        self.assertEqual((self.checkout / ".env").read_text(), "host-local-setting=preserve\n")
+        env_lines = (self.checkout / ".env").read_text().splitlines()
+        self.assertIn("host-local-setting=preserve", env_lines)
+        self.assertIn("OPENCODE_PASSWORD='throwaway-password'", env_lines)
+        self.assertIn("OPENCODE_ADMIN_TOKEN='731942'", env_lines)
+        self.assertEqual((self.checkout / ".env").stat().st_mode & 0o777, 0o600)
+        self.assertNotIn("throwaway-password", result.stdout + result.stderr)
+        self.assertNotIn("731942", result.stdout + result.stderr)
         self.assertEqual(self.docker_log.read_text().splitlines(), ["compose pull", "compose up -d --remove-orphans"])
 
     def test_compose_failure_propagates(self):
@@ -86,7 +92,11 @@ class ProductionDeploymentTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, f"stdout={result.stdout}\nstderr={result.stderr}")
         self.assertEqual(run(["git", "describe", "--tags", "--exact-match"], cwd=deployment).stdout.strip(), "v1.2.3")
         self.assertEqual((deployment / "docker-compose.yaml").read_text(), "tagged production compose\n")
-        self.assertEqual((deployment / ".env").read_text(), "host-local-setting=preserve\n")
+        env_lines = (deployment / ".env").read_text().splitlines()
+        self.assertIn("host-local-setting=preserve", env_lines)
+        self.assertIn("OPENCODE_PASSWORD='throwaway-password'", env_lines)
+        self.assertIn("OPENCODE_ADMIN_TOKEN='731942'", env_lines)
+        self.assertEqual((deployment / ".env").stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.docker_log.read_text().splitlines(), ["compose pull", "compose up -d --remove-orphans"])
 
 
