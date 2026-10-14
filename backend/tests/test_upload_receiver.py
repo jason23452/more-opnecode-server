@@ -1,5 +1,9 @@
 import io
 import subprocess
+import threading
+from http.server import ThreadingHTTPServer
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 import zipfile
 from pathlib import Path
 import pytest
@@ -53,6 +57,85 @@ def test_receiver_installs_git_history_and_sanitized_remote(tmp_path) -> None:
     assert log.stdout.strip() == "initial"
     assert remote.stdout.strip() == "https://example.com/team/project.git"
     assert "secret-token" not in (target / ".git/config").read_text()
+
+
+def test_receiver_installs_authorized_git_credentials_outside_project_config(tmp_path, monkeypatch) -> None:
+    import src.Features.Opencode.upload_receiver as receiver
+
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(["git", "init", "-q", str(project)], check=True)
+    subprocess.run(["git", "-C", str(project), "remote", "add", "origin",
+                    "https://git.example/team/repo.git"], check=True)
+    monkeypatch.setenv("OPENCODE_GIT_CREDENTIAL_PATH", str(tmp_path / "runtime" / "credentials"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    receiver.install_git_credentials(
+        "https://git.example/team/repo.git", {"username": "alice", "password": "secret"}, project,
+    )
+
+    assert "secret" not in (project / ".git" / "config").read_text()
+    assert (tmp_path / "runtime" / "credentials").exists()
+    config = subprocess.run(["git", "config", "--global", "--get", "credential.helper"],
+                            check=True, capture_output=True, text=True)
+    assert config.stdout.strip() == "store --file=" + str(tmp_path / "runtime" / "credentials")
+    assert "secret" in (tmp_path / "runtime" / "credentials").read_text()
+    available = subprocess.run(["git", "-C", str(project), "credential", "fill"],
+                               input="protocol=https\nhost=git.example\npath=team/repo.git\n\n",
+                               check=True, capture_output=True, text=True)
+    assert "password=secret" in available.stdout
+    unrelated = subprocess.run(["git", "-C", str(project), "credential", "fill"],
+                               input="protocol=https\nhost=git.example\npath=team/other.git\n\n",
+                               capture_output=True, text=True)
+    assert "password=secret" not in unrelated.stdout
+
+
+def test_receiver_rejects_credentials_for_remote_not_in_project(tmp_path) -> None:
+    import src.Features.Opencode.upload_receiver as receiver
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(["git", "init", "-q", str(project)], check=True)
+    subprocess.run(["git", "-C", str(project), "remote", "add", "origin",
+                    "https://git.example/team/repo.git"], check=True)
+
+    with pytest.raises(ValueError, match="configured HTTPS remote"):
+        receiver.install_git_credentials("https://other.example/repo.git",
+                                         {"username": "alice", "password": "secret"}, project)
+
+
+def test_git_credential_upload_requires_container_upload_token(tmp_path, monkeypatch) -> None:
+    import json
+    import src.Features.Opencode.upload_receiver as receiver
+
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(["git", "init", "-q", str(project)], check=True)
+    subprocess.run(["git", "-C", str(project), "remote", "add", "origin",
+                    "https://git.example/team/repo.git"], check=True)
+    monkeypatch.setattr(receiver, "PROJECT", project)
+    monkeypatch.setenv("OPENCODE_UPLOAD_TOKEN", "container-upload-token")
+    monkeypatch.setenv("OPENCODE_GIT_CREDENTIAL_PATH", str(tmp_path / "runtime" / "credentials"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), receiver.UploadHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}/upload/git-credentials"
+    data = json.dumps({"remote": "https://git.example/team/repo.git",
+                       "credentials": {"username": "alice", "password": "secret"}}).encode()
+    try:
+        with pytest.raises(HTTPError) as error:
+            urlopen(Request(url, data=data, method="PUT", headers={"Content-Type": "application/json"}))
+        assert error.value.code == 401
+        request = Request(url, data=data, method="PUT", headers={
+            "Authorization": "Bearer container-upload-token", "Content-Type": "application/json",
+        })
+        with urlopen(request) as response:
+            assert response.status == 204
+        assert (tmp_path / "runtime" / "credentials").exists()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 def test_failed_atomic_exchange_keeps_existing_workspace(tmp_path, monkeypatch) -> None:

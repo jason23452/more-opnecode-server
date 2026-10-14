@@ -5,6 +5,7 @@ import json
 import os
 import re
 import ssl
+import subprocess
 import tempfile
 import time
 import uuid
@@ -87,6 +88,44 @@ def _request(url: str, token: str, data: bytes | None = None, method: str = "GET
     request = Request(url, data=data, headers={"Authorization": f"Bearer {token}", **(headers or {})}, method=method)
     with _open_url(request) as response:
         return response.read()
+
+
+def upload_git_credentials(url: str, token: str, remote: str, credentials: dict[str, str], retries: int = 3) -> None:
+    if not url.startswith("https://") or not remote.startswith("https://"):
+        raise ValueError("Git 認證只支援透過 HTTPS 傳送至 HTTPS remote")
+    payload = json.dumps({"remote": remote, "credentials": credentials}).encode()
+    _retry_request(
+        lambda target: _request(target.removesuffix("/upload") + "/upload/git-credentials", token,
+                                payload, "PUT", {"Content-Type": "application/json"}),
+        retries, url,
+    )
+
+
+def git_https_credentials(project: Path) -> tuple[str, dict[str, str]] | None:
+    try:
+        remote = subprocess.run(
+            ["git", "-C", str(project), "remote", "get-url", "origin"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    if not remote.lower().startswith("https://"):
+        return None
+    from urllib.parse import urlsplit, urlunsplit
+
+    parsed = urlsplit(remote)
+    host = parsed.netloc.rsplit("@", 1)[-1]
+    clean_remote = urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+    prompt = f"protocol=https\nhost={host}\n"
+    if parsed.path.strip("/"):
+        prompt += f"path={parsed.path.lstrip('/')}\n"
+    try:
+        result = subprocess.run(["git", "credential", "fill"], input=prompt + "\n",
+                                capture_output=True, text=True, check=True, cwd=project)
+    except (OSError, subprocess.CalledProcessError):
+        return clean_remote, {}
+    credentials = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    return clean_remote, {key: credentials[key] for key in ("username", "password") if key in credentials}
 
 
 def _retry_request(operation, retries: int, current_url: str) -> bytes:
