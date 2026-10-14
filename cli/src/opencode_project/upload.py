@@ -91,8 +91,8 @@ def _request(url: str, token: str, data: bytes | None = None, method: str = "GET
 
 
 def upload_git_credentials(url: str, token: str, remote: str, credentials: dict[str, str], retries: int = 3) -> None:
-    if not url.startswith("https://") or not remote.startswith("https://"):
-        raise ValueError("Git 認證只支援透過 HTTPS 傳送至 HTTPS remote")
+    if not url.startswith("https://") or not (remote.startswith("https://") or _ssh_remote(remote)):
+        raise ValueError("Git 認證必須透過 HTTPS 傳送，且 remote 必須使用 HTTPS 或 SSH")
     payload = json.dumps({"remote": remote, "credentials": credentials}).encode()
     _retry_request(
         lambda target: _request(target.removesuffix("/upload") + "/upload/git-credentials", token,
@@ -126,6 +126,55 @@ def git_https_credentials(project: Path) -> tuple[str, dict[str, str]] | None:
         return clean_remote, {}
     credentials = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
     return clean_remote, {key: credentials[key] for key in ("username", "password") if key in credentials}
+
+
+def _ssh_remote(remote: str) -> bool:
+    from urllib.parse import urlsplit
+
+    return (remote.startswith("git@") or remote.startswith("ssh://") or
+            (urlsplit(remote).scheme == "ssh" and bool(urlsplit(remote).hostname)) or
+            bool(re.fullmatch(r"[^@/:]+@[^/:]+:.+", remote)))
+
+
+def git_ssh_credentials(project: Path) -> tuple[str, dict[str, str]] | None:
+    """Return the origin SSH remote and an available, unencrypted identity file."""
+    try:
+        remote = subprocess.run(
+            ["git", "-C", str(project), "remote", "get-url", "origin"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    if not _ssh_remote(remote):
+        return None
+
+    from urllib.parse import urlsplit
+
+    if remote.startswith("ssh://"):
+        parsed = urlsplit(remote)
+        host = parsed.hostname or ""
+    else:
+        host = remote.split("@", 1)[-1].split(":", 1)[0]
+    try:
+        query = subprocess.run(["ssh", "-G", host], check=True, capture_output=True, text=True)
+    except (OSError, subprocess.CalledProcessError):
+        return remote, {}
+    candidates = []
+    for line in query.stdout.splitlines():
+        key, _, value = line.partition(" ")
+        if key.lower() == "identityfile":
+            path = Path(value.strip().strip('"')).expanduser()
+            if path.is_file() and path.suffix != ".pub":
+                candidates.append(path)
+    for path in candidates:
+        try:
+            private_key = path.read_text()
+        except (OSError, UnicodeError):
+            continue
+        if "PRIVATE KEY-----" not in private_key or "ENCRYPTED" in private_key:
+            continue
+        return remote, {"private_key": private_key, "key_name": path.name}
+    return remote, {}
 
 
 def _retry_request(operation, retries: int, current_url: str) -> bytes:
