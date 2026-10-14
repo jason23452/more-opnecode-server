@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import ssl
 import tempfile
 import time
 import uuid
@@ -11,6 +12,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+import certifi
 
 EXCLUDED_DIRECTORIES = {
     ".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__",
@@ -57,13 +60,19 @@ def _send(url: str, token: str, archive: bytes) -> int:
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/zip"},
         method="PUT",
     )
-    with urlopen(request, timeout=300) as response:
+    with _open_url(request) as response:
         return response.status
+
+
+def _open_url(request: Request):
+    ca_bundle = os.environ.get("SSL_CERT_FILE") or certifi.where()
+    context = ssl.create_default_context(cafile=ca_bundle)
+    return urlopen(request, timeout=300, context=context)
 
 
 def _request(url: str, token: str, data: bytes | None = None, method: str = "GET", headers: dict[str, str] | None = None) -> bytes:
     request = Request(url, data=data, headers={"Authorization": f"Bearer {token}", **(headers or {})}, method=method)
-    with urlopen(request, timeout=300) as response:
+    with _open_url(request) as response:
         return response.read()
 
 
@@ -81,6 +90,12 @@ def _retry_request(operation, retries: int, current_url: str) -> bytes:
 
 
 def _upload_failure_message(error: Exception | None) -> str:
+    reason = error.reason if isinstance(error, URLError) else error
+    if isinstance(reason, ssl.SSLCertVerificationError):
+        return (
+            f"Tunnel TLS 憑證驗證失敗：{reason}。CLI 使用內建公開 CA 憑證；"
+            "若網路使用自訂或公司 TLS 憑證，請將 SSL_CERT_FILE 設為受信任的 CA 憑證檔後重試。"
+        )
     return (
         f"Tunnel 上傳失敗：{error}。請透過管理 API 重新查詢目前的 upload_url，"
         "並使用原容器 upload token 重新執行上傳命令。"

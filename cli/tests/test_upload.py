@@ -1,17 +1,77 @@
 import io
 import os
+import ssl
 import subprocess
 import sys
+import threading
 import zipfile
 import tempfile
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.error import URLError
 from unittest.mock import patch
 
+import certifi
+import trustme
+
+import opencode_project.upload as upload
 from opencode_project.upload import create_archive, upload_archive
 
 
 class UploadTests(unittest.TestCase):
+    def test_upload_uses_packaged_trusted_certificate_bundle(self):
+        received = []
+
+        class UploadHandler(BaseHTTPRequestHandler):
+            def do_PUT(self):
+                received.append((self.headers.get("Authorization"), self.rfile.read(int(self.headers["Content-Length"]))))
+                self.send_response(204)
+                self.end_headers()
+
+            def log_message(self, format, *args):
+                pass
+
+        ca = trustme.CA()
+        server_certificate = ca.issue_cert("localhost")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            certificate_path = root / "server.pem"
+            key_path = root / "server-key.pem"
+            ca_path = root / "trusted-ca.pem"
+            server_certificate.cert_chain_pems[0].write_to_path(certificate_path)
+            server_certificate.private_key_pem.write_to_path(key_path)
+            ca.cert_pem.write_to_path(ca_path)
+
+            server = ThreadingHTTPServer(("127.0.0.1", 0), UploadHandler)
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(certificate_path, key_path)
+            server.socket = context.wrap_socket(server.socket, server_side=True)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                with patch.object(certifi, "where", return_value=str(ca_path)), \
+                        patch.dict(os.environ, {"SSL_CERT_FILE": ""}), \
+                        patch("opencode_project.upload.time.sleep"):
+                    upload_archive(
+                        f"https://localhost:{server.server_port}/upload",
+                        "upload-capability", b"project archive", retries=1,
+                    )
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+        self.assertEqual(received, [("Bearer upload-capability", b"project archive")])
+
+    def test_certificate_verification_failure_explains_custom_ca_override(self):
+        message = upload._upload_failure_message(
+            URLError(ssl.SSLCertVerificationError(1, "unable to get local issuer certificate"))
+        )
+
+        self.assertIn("SSL_CERT_FILE", message)
+        self.assertNotIn("重新查詢目前的 upload_url", message)
+
     def test_help_uses_unicode_output_when_system_encoding_cannot_render_chinese(self):
         environment = os.environ | {"PYTHONIOENCODING": "cp1252"}
         result = subprocess.run(
