@@ -1,0 +1,73 @@
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    expose:
+      - "80"
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      APP_NAME: ${APP_NAME:-Features Base API}
+      API_PREFIX: ${API_PREFIX:-/api}
+      DEBUG: ${DEBUG:-false}
+      FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:-["http://localhost"]}
+      OPENCODE_PASSWORD: ${OPENCODE_PASSWORD:-change-me}
+      OPENCODE_ADMIN_TOKEN: ${OPENCODE_ADMIN_TOKEN:-change-me}
+      OPENCODE_CONTAINER_CPU: ${OPENCODE_CONTAINER_CPU:-1.0}
+      OPENCODE_CONTAINER_MEMORY: ${OPENCODE_CONTAINER_MEMORY:-2g}
+      OPENCODE_MAX_CONTAINERS: ${OPENCODE_MAX_CONTAINERS:-4}
+      OPENCODE_STARTUP_TIMEOUT: ${OPENCODE_STARTUP_TIMEOUT:-180}
+      OPENCODE_IMAGE: ${OPENCODE_IMAGE:-dynamic-opencode:latest}
+      OPENCODE_TUNNEL_PROBE_INTERVAL: ${OPENCODE_TUNNEL_PROBE_INTERVAL:-30}
+      OPENCODE_TUNNEL_FAILURE_THRESHOLD: ${OPENCODE_TUNNEL_FAILURE_THRESHOLD:-3}
+      OPENCODE_TUNNEL_RECOVERY_ATTEMPTS: ${OPENCODE_TUNNEL_RECOVERY_ATTEMPTS:-3}
+      OPENCODE_TUNNEL_RECOVERY_DELAY: ${OPENCODE_TUNNEL_RECOVERY_DELAY:-2}
+      OPENCODE_TUNNEL_RETRY_INITIAL_DELAY: ${OPENCODE_TUNNEL_RETRY_INITIAL_DELAY:-5}
+      OPENCODE_TUNNEL_RETRY_MAX_DELAY: ${OPENCODE_TUNNEL_RETRY_MAX_DELAY:-60}
+      OPENCODE_CLI_RELEASE_URL: ${OPENCODE_CLI_RELEASE_URL:-https://github.com/jason23452/more-opnecode-server/releases/latest/download}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    expose:
+      - "8000"
+    restart: unless-stopped
+
+  ingress:
+    image: nginx:1.27-alpine
+    depends_on:
+      - frontend
+      - backend
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    configs:
+      - source: ingress_config
+        target: /etc/nginx/conf.d/default.conf
+    restart: unless-stopped
+
+configs:
+  ingress_config:
+    content: |
+      server {
+          listen 80;
+          server_name _;
+
+          location /api/ {
+              proxy_pass http://backend:8000/api/;
+              proxy_set_header Host $$host;
+              proxy_set_header X-Real-IP $$remote_addr;
+              proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $$scheme;
+          }
+
+          location / {
+              proxy_pass http://frontend:80;
+              proxy_set_header Host $$host;
+              proxy_set_header X-Real-IP $$remote_addr;
+              proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $$scheme;
+          }
+      }
