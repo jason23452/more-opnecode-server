@@ -53,7 +53,7 @@ jobs:
   deploy:
     name: Pull and deploy production images
     needs: publish-images
-    runs-on: bojii-system
+    runs-on: [self-hosted, Linux, X64, more-opencode-server]
     environment: production
     permissions:
       contents: read

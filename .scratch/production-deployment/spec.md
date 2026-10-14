@@ -8,7 +8,7 @@ Status: ready-for-agent
 
 ## Solution
 
-提供正式部署 Compose 設定與本機整合驗證 Compose 設定，並為前端及 API 後端提供正式容器映像建置方式。符合 `v*` 的版本 tag 建立時，GitHub Actions 建置前後端映像並發布至 GitHub Container Registry（GHCR），以版本 tag 與 `latest` 標記。映像發布成功後，workflow 使用標籤為 `bojii-system` 的 self-hosted runner 更新既有工作目錄至該 tag、將正式 Compose 設定複製成部署時使用的標準 Compose 檔、拉取 GHCR 最新映像並啟動服務；部署主機不建置映像。
+提供正式部署 Compose 設定與本機整合驗證 Compose 設定，並為前端及 API 後端提供正式容器映像建置方式。符合 `v*` 的版本 tag 建立時，GitHub Actions 建置前後端映像並發布至 GitHub Container Registry（GHCR），以版本 tag 與 `latest` 標記。映像發布成功後，workflow 使用名稱為 `bojii-system` 且符合 `self-hosted`、`Linux`、`X64`、`more-opencode-server` labels 的 runner 更新既有工作目錄至該 tag、將正式 Compose 設定複製成部署時使用的標準 Compose 檔、拉取 GHCR 最新映像並啟動服務；部署主機不建置映像。
 
 正式部署由單一服務入口提供前端與 API 存取；目前入口只綁定部署主機 loopback，供主機上的一個可信服務入口轉送前端與 API 請求。外部 trusted ingress、VPN 與認證設定仍延後處理，不由本次部署直接公開 host port。部署所需機密由 GitHub Secrets 提供，不提交至 repository。
 
@@ -28,7 +28,7 @@ Status: ready-for-agent
 12. As a 維護者, I want 本機驗證完成後能停止並清理此次建立的服務, so that 驗證不會留下佔用資源的容器。
 13. As a 維護者, I want 正式 Compose 設定能在本機被解析驗證, so that 明顯的 Compose 語法或必要設定錯誤能在部署前被發現。
 14. As a 維護者, I want push 符合 `v*` 格式的版本 tag 時建置並發布前後端 GHCR 映像，再觸發正式部署, so that 程式碼與部署映像來自同一個發布版本。
-15. As a 維護者, I want 部署 workflow 只使用標籤為 `bojii-system` 的 self-hosted runner, so that 部署命令在正式部署主機執行。
+15. As a 維護者, I want 部署 workflow 只使用名稱為 `bojii-system` 且符合 runner labels 的 self-hosted runner, so that 部署命令在正式部署主機執行。
 16. As a 維護者, I want workflow 將既有 repository 工作目錄更新至觸發部署的 tag, so that 部署內容與發布標籤一致。
 17. As a 維護者, I want workflow 在部署主機將 `docker-compose.prod.yaml` 複製成 `docker-compose.yaml`, so that 主機上的 Compose 命令使用該 tag 對應的正式設定。
 18. As a 維護者, I want workflow 在 GHCR 映像發布成功後拉取 `latest` 前後端映像並啟動服務, so that tag 部署可完成完整的正式部署，而非只更新檔案。
@@ -46,7 +46,7 @@ Status: ready-for-agent
 - Compose 的正式服務拓撲以單一服務入口呈現前端及 API；入口 host bind 僅限 loopback，不直接公開於外部介面。主機本機單一可信服務入口負責轉送流量；外部 trusted ingress、VPN、認證、TLS 與 domain 設定延後至部署環境配置，不在本次範圍內。
 - API 後端必須能呼叫部署主機 Docker daemon，維持既有由同主機 Docker 管理 OpenCode 容器的架構。不得將此應用服務與 OpenCode 容器領域概念混為一談。
 - 前後端 GHCR 映像名稱分別為 `ghcr.io/jason23452/more-opnecode-server-frontend` 與 `ghcr.io/jason23452/more-opnecode-server-backend`。每次符合 `v*` 的版本 tag 建置並發布該版本 tag 與 `latest` 兩個 image tag。
-- GitHub Actions 使用兩階段工作：GitHub-hosted runner 建置並以 production environment 的 `GHCR_PAT` classic personal access token 發布 GHCR 映像；發布成功後，標籤為 `bojii-system` 的 self-hosted runner 使用同一 PAT 登入 GHCR 並部署。PAT 至少需具備 `read:packages` 與 `write:packages` scope；存取 private repository package 時另需適當 repository 權限。
+- GitHub Actions 使用兩階段工作：GitHub-hosted runner 建置並以 production environment 的 `GHCR_PAT` classic personal access token 發布 GHCR 映像；發布成功後，使用名稱為 `bojii-system`、labels 為 `self-hosted`、`Linux`、`X64`、`more-opencode-server` 的 runner 登入 GHCR 並部署。PAT 至少需具備 `read:packages` 與 `write:packages` scope；存取 private repository package 時另需適當 repository 權限。
 - 部署 workflow 更新 `/home/bojii/more-opencode-server` 既有 repository 工作目錄至觸發的 tag；更新方式需保留部署所需但不納入版本控制的環境設定。workflow 將 `docker-compose.prod.yaml` 複製為 `docker-compose.yaml`，登入 GHCR、執行 `docker compose pull`，再以 `docker compose up -d` 啟動服務；正式部署不得執行 `docker compose build`。
 - 複製出的 `docker-compose.yaml` 是部署主機工作目錄中的執行產物，不回寫或 commit 至 repository。
 - 部署機密由 GitHub production environment secrets 提供：`GHCR_PAT` 用於讀寫 GHCR，`OPENCODE_PASSWORD` 與 `OPENCODE_ADMIN_TOKEN` 用於後端應用設定。這些 secret 的正式值不納入規格或版本控制。
@@ -58,7 +58,7 @@ Status: ready-for-agent
 
 - 好的測試應透過 Docker Compose 的外部可觀察行為驗證服務可解析、建置、啟動及互相連線；不應以 Dockerfile 內部指令順序或 workflow YAML 的文字內容作為主要驗收依據。
 - 主要測試 seam 為 Docker Compose 整合邊界。本機驗證入口解析正式與本機 Compose 設定，建置並啟動本機前後端服務，從 HTTP 入口確認前端可用，並確認 API 健康端點可達，結束後清理服務。
-- GitHub Actions 的行為驗收以 workflow 執行條件與部署操作為界：確認 `v*` tag 先發布兩個 GHCR 映像，再於 `bojii-system` runner 更新指定工作目錄、產生部署用標準 Compose 檔、pull 最新映像並啟動；不要求 PR 或一般測試連線至實際 self-hosted 部署主機。
+- GitHub Actions 的行為驗收以 workflow 執行條件與部署操作為界：確認 `v*` tag 先發布兩個 GHCR 映像，再於符合指定 labels 的 self-hosted runner 更新指定工作目錄、產生部署用標準 Compose 檔、pull 最新映像並啟動；不要求 PR 或一般測試連線至實際 self-hosted 部署主機。
 - Workflow 可對非部署分支或非 `v*` tag 的事件做靜態/隔離驗證，確認不會執行正式部署動作。真正部署主機的發佈驗收由 tag workflow 的執行結果確認。
 - 前端已有 production build 與 typecheck 指令；後端已有 pytest 測試及 `/api/health` 健康端點。容器驗證應保留這些既有模組層級檢查，Compose smoke test 則覆蓋它們無法驗證的跨容器網路、runtime config 與服務入口行為。
 - 本機驗證依賴可用 Docker Compose/daemon；CI workflow 部署驗證依賴具備 Docker 權限與指定標籤的 self-hosted runner。測試不得要求 Cloudflare Quick Tunnel 或其外網 URL 才能驗證前後端應用服務整合。

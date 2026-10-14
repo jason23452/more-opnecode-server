@@ -7,7 +7,7 @@
 **Status:** resolved
 
 - [x] 只有符合 `v*` 的 tag 會觸發 workflow；GitHub-hosted job 建置並發布前後端 images 至 GHCR，分別附上版本 tag 與 `latest`。
-- [x] 發布 images 成功後，部署 job 限定使用 `bojii-system` self-hosted runner，並以 production environment 的 `GHCR_PAT` 登入 GHCR 拉取 images。
+- [x] 發布 images 成功後，部署 job 限定使用名稱為 `bojii-system`、labels 為 `self-hosted`、`Linux`、`X64`、`more-opencode-server` 的 runner，並以 production environment 的 `GHCR_PAT` 登入 GHCR 拉取 images。
 - [x] Workflow 將 `/home/bojii/more-opencode-server` 既有 repository 工作目錄更新至觸發部署的 tag，並保留未納入版本控制的部署設定。
 - [x] Workflow 在部署工作目錄將 `docker-compose.prod.yaml` 複製為 `docker-compose.yaml`，不自動 commit 或 push 該產生檔案。
 - [x] Workflow 執行 `docker compose pull` 並在背景啟動前端與 API 後端服務；部署主機不執行 image build。
