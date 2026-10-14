@@ -10,14 +10,14 @@ Status: ready-for-agent
 
 提供正式部署 Compose 設定與本機整合驗證 Compose 設定，並為前端及 API 後端提供正式容器映像建置方式。符合 `v*` 的版本 tag 建立時，GitHub Actions 建置前後端映像並發布至 GitHub Container Registry（GHCR），以版本 tag 與 `latest` 標記。映像發布成功後，workflow 使用名稱為 `bojii-system` 且符合 `self-hosted`、`Linux`、`X64`、`more-opencode-server` labels 的 runner 更新既有工作目錄至該 tag、將正式 Compose 設定複製成部署時使用的標準 Compose 檔、拉取 GHCR 最新映像並啟動服務；部署主機不建置映像。
 
-正式部署由單一服務入口提供前端與 API 存取；目前入口只綁定部署主機 loopback，供主機上的一個可信服務入口轉送前端與 API 請求。外部 trusted ingress、VPN 與認證設定仍延後處理，不由本次部署直接公開 host port。部署所需機密由 GitHub Secrets 提供，不提交至 repository。
+正式部署以前端作為單一服務入口，直接綁定部署主機 `0.0.0.0:3000`。前端 Nginx 將 `/api/` 經 Compose 內部網路轉送至 API 後端；後端不發布 host port。管理 API 可透過公開前端入口到達，管理端點仍以 `OPENCODE_ADMIN_TOKEN` 驗證。部署所需機密由 GitHub Secrets 提供，不提交至 repository。
 
 ## User Stories
 
 1. As a 維護者, I want 透過一份正式部署 Compose 設定啟動前端與 API 後端, so that 兩個服務能以一致的版本共同部署。
 2. As a 維護者, I want 前端與 API 後端各自有可重複建置並發布至 GHCR 的 production 容器映像, so that 正式環境不需要在部署主機建置或安裝應用程式依賴。
 3. As a 維護者, I want 正式 Compose 設定明確描述前端與 API 後端的服務關係, so that 任一服務重建後仍能透過服務名稱互相連線。
-4. As a 使用者, I want 從單一服務入口載入前端並呼叫 API, so that 我不必分別記住前端與 API 的公開位置。
+4. As a 使用者, I want 從部署主機 `0.0.0.0:3000` 載入前端並經同源 `/api` 呼叫後端, so that 我不必分別連接前端與 API。
 5. As a 維護者, I want 前端在正式環境透過 runtime config 使用相對 API 路徑, so that API 可由同一服務入口提供而不需在前端映像中硬編碼部署網域。
 6. As a 維護者, I want API 後端在正式環境保有管理 OpenCode 容器所需的同主機 Docker 能力, so that 現有 OpenCode 容器生命週期功能在 Compose 部署後仍可運作。
 7. As a 維護者, I want 正式服務所需設定與機密可在部署時注入, so that 不同環境可使用各自的設定且秘密不會進入版本控制。
@@ -43,7 +43,8 @@ Status: ready-for-agent
 - 提供正式部署 Compose 設定 `docker-compose.prod.yaml`，服務範圍只包含前端與 API 後端；服務使用 GHCR 發布的映像，不在正式 Compose 中指定 build context。OpenCode 容器仍由 API 後端依既有領域設計透過同主機 Docker 管理，不作為固定的 Compose 應用服務啟動。
 - 正式部署另外提供本機整合驗證 Compose 設定，服務範圍同樣只包含前端與 API 後端；本機設定可提供建置來源、連接埠及驗證所需差異，但服務契約與正式版一致。
 - 前端與 API 後端各自提供 production 容器建置方式。前端需保留既有 runtime config 能力，讓 API base URL 可在部署時指向同一服務入口下的相對 `/api` 路徑；API 沿用既有 `/api` 前綴及健康端點。
-- Compose 的正式服務拓撲以單一服務入口呈現前端及 API；入口 host bind 僅限 loopback，不直接公開於外部介面。主機本機單一可信服務入口負責轉送流量；外部 trusted ingress、VPN、認證、TLS 與 domain 設定延後至部署環境配置，不在本次範圍內。
+- 正式服務入口由前端容器提供，host port 綁定 `0.0.0.0:3000`（可用 `FRONTEND_PORT` 設定 host port）；前端 Nginx 將 `/api/` 代理到 Compose 內部網路中的 `backend:8000`。後端不映射 host port。
+- 公開前端入口也會使管理 API 路徑可從該入口到達；後端管理端點使用既有 `OPENCODE_ADMIN_TOKEN` 驗證。遵循 ADR「公開前端入口與容器內部 API 網路」及既有 Tunnel CLI 資料路徑決策。
 - API 後端必須能呼叫部署主機 Docker daemon，維持既有由同主機 Docker 管理 OpenCode 容器的架構。不得將此應用服務與 OpenCode 容器領域概念混為一談。
 - 前後端 GHCR 映像名稱分別為 `ghcr.io/jason23452/more-opnecode-server-frontend` 與 `ghcr.io/jason23452/more-opnecode-server-backend`。每次符合 `v*` 的版本 tag 建置並發布該版本 tag 與 `latest` 兩個 image tag。
 - GitHub Actions 使用兩階段工作：GitHub-hosted runner 建置並以 production environment 的 `GHCR_PAT` classic personal access token 發布 GHCR 映像；發布成功後，使用名稱為 `bojii-system`、labels 為 `self-hosted`、`Linux`、`X64`、`more-opencode-server` 的 runner 登入 GHCR 並部署。PAT 至少需具備 `read:packages` 與 `write:packages` scope；存取 private repository package 時另需適當 repository 權限。
@@ -69,7 +70,7 @@ Status: ready-for-agent
 - Kubernetes、其他雲端容器平台、GHCR 以外的映像 Registry 或多主機部署。
 - 非 tag 發布的自動正式部署、任意 tag 部署或手動審批環節。
 - 自動提交部署主機產生的 `docker-compose.yaml` 回 repository。
-- 在本規格中決定正式 domain、TLS 憑證、外部 trusted ingress、VPN/認證設定或 GitHub Secrets 的具體值；正式服務入口不得直接綁定公開 host 介面。
+- 在本規格中決定正式 domain、TLS 憑證、額外外部反向代理設定或 GitHub Secrets 的具體值；正式前端入口直接發布 host port 3000。
 - 建立資料庫、遷移資料或改動前後端產品功能/API 契約。
 - 在本機整合驗證中啟動 OpenCode 容器或 Cloudflare Quick Tunnel。
 
