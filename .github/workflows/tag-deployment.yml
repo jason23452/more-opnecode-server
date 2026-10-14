@@ -77,4 +77,4 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          DEPLOY_TAG="${GITHUB_REF_NAME}" scripts/deploy-production.sh
+          DEPLOY_TAG="${GITHUB_REF_NAME}" bash scripts/deploy-production.sh
