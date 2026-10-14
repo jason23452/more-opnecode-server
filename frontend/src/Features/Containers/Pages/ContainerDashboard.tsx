@@ -20,10 +20,10 @@ export function ContainerDashboard() {
   const [createdContainer, setCreatedContainer] = useState<CreatedContainer | null>(null)
   const [copyFeedback, setCopyFeedback] = useState('')
   const [commandEnvironments, setCommandEnvironments] = useState<Record<string, CommandEnvironment>>({})
-  const [commands, setCommands] = useState<Record<string, string>>({})
+  const [commands, setCommands] = useState<Record<string, { upload: string; connect: string }>>({})
   const [commandLoading, setCommandLoading] = useState<Record<string, boolean>>({})
   const [commandErrors, setCommandErrors] = useState<Record<string, string>>({})
-  const [copiedContainer, setCopiedContainer] = useState('')
+  const [copiedCommand, setCopiedCommand] = useState<{ containerId: string; kind: 'upload' | 'connect' } | null>(null)
   const [deleteError, setDeleteError] = useState('')
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [deleteInProgress, setDeleteInProgress] = useState(false)
@@ -78,13 +78,14 @@ export function ContainerDashboard() {
     setCommandEnvironments((current) => ({ ...current, [container.id]: environment }))
     setCommandLoading((current) => ({ ...current, [container.id]: true }))
     setCommandErrors((current) => ({ ...current, [container.id]: '' }))
-    setCommands((current) => ({ ...current, [container.id]: '' }))
-    setCopiedContainer('')
+    setCommands((current) => ({ ...current, [container.id]: { upload: '', connect: '' } }))
+    setCopiedCommand(null)
     try {
       const result = await containerApi.getCommands(container.id, environment, token.trim())
-      const command = result.connect_command
-      if (command) setCommands((current) => ({ ...current, [container.id]: command }))
-      else setCommandErrors((current) => ({ ...current, [container.id]: '目前無法取得容器連線指令。' }))
+      const upload = result.upload_command ?? ''
+      const connect = result.connect_command ?? ''
+      if (upload || connect) setCommands((current) => ({ ...current, [container.id]: { upload, connect } }))
+      else setCommandErrors((current) => ({ ...current, [container.id]: '目前無法取得容器上傳與連線指令。' }))
     } catch (cause) {
       setCommandErrors((current) => ({
         ...current,
@@ -120,12 +121,15 @@ export function ContainerDashboard() {
     }
   }
 
-  const copyCommand = async (containerId: string) => {
+  const copyCommand = async (containerId: string, kind: 'upload' | 'connect') => {
+    const command = commands[containerId]?.[kind]
+    if (!command) return
     try {
-      await navigator.clipboard.writeText(commands[containerId])
-      setCopiedContainer(containerId)
+      await navigator.clipboard.writeText(command)
+      setCopiedCommand({ containerId, kind })
     } catch {
-      setCommandErrors((current) => ({ ...current, [containerId]: '複製連線指令失敗。' }))
+      const label = kind === 'upload' ? '上傳' : '連線'
+      setCommandErrors((current) => ({ ...current, [containerId]: `複製${label}指令失敗。` }))
     }
   }
 
@@ -276,11 +280,20 @@ export function ContainerDashboard() {
                           </div>
                           {commandLoading[container.id] && <p className="mt-2" role="status">正在取得連線指令…</p>}
                           {commandErrors[container.id] && <p className="mt-2 text-red-200" role="alert">{commandErrors[container.id]}</p>}
-                          {commands[container.id] && (
+                          {commands[container.id]?.upload && (
                             <div className="mt-3">
-                              <code className="block break-all rounded-lg bg-zinc-950 p-3">{commands[container.id]}</code>
-                              <Button className="mt-2" variant="bordered" onPress={() => copyCommand(container.id)}>複製連線指令</Button>
-                              {copiedContainer === container.id && <p className="mt-2 text-sm text-green-300" role="status">連線指令已複製</p>}
+                              <p className="mb-2 text-sm text-zinc-400">專案上傳指令</p>
+                              <code className="block break-all rounded-lg bg-zinc-950 p-3">{commands[container.id].upload}</code>
+                              <Button className="mt-2" variant="bordered" onPress={() => copyCommand(container.id, 'upload')}>複製上傳指令</Button>
+                              {copiedCommand?.containerId === container.id && copiedCommand.kind === 'upload' && <p className="mt-2 text-sm text-green-300" role="status">上傳指令已複製</p>}
+                            </div>
+                          )}
+                          {commands[container.id]?.connect && (
+                            <div className="mt-3">
+                              <p className="mb-2 text-sm text-zinc-400">容器連線指令</p>
+                              <code className="block break-all rounded-lg bg-zinc-950 p-3">{commands[container.id].connect}</code>
+                              <Button className="mt-2" variant="bordered" onPress={() => copyCommand(container.id, 'connect')}>複製連線指令</Button>
+                              {copiedCommand?.containerId === container.id && copiedCommand.kind === 'connect' && <p className="mt-2 text-sm text-green-300" role="status">連線指令已複製</p>}
                             </div>
                           )}
                         </div>

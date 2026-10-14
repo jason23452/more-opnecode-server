@@ -28,6 +28,7 @@ export type CliInstallCommand = {
 }
 
 export type ContainerCommands = {
+  upload_command?: string | null
   connect_command?: string | null
 }
 

@@ -96,7 +96,7 @@ describe('容器管理 Dashboard', () => {
     expect(window.location.search).toBe('')
   })
 
-  it('開啟容器連線 URL，並以選定平台查詢及複製連線指令', async () => {
+  it('開啟容器連線 URL，並查詢及複製專案上傳與連線指令', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
     server.use(
@@ -106,7 +106,10 @@ describe('容器管理 Dashboard', () => {
       http.get('*/opencode/containers/container-1', ({ request }) => {
         expect(new URL(request.url).searchParams.get('environment')).toBe('windows')
         expect(request.headers.get('authorization')).toBe('Bearer secret-token')
-        return HttpResponse.json({ connect_command: 'opencode-project connect --url wss://tunnel.example/connect --token=secret' })
+        return HttpResponse.json({
+          upload_command: 'opencode-project upload --url https://tunnel.example/upload --token=upload-secret --project .',
+          connect_command: 'opencode-project connect --url wss://tunnel.example/connect --token=connect-secret',
+        })
       }),
     )
     render(<MainApp />)
@@ -119,9 +122,13 @@ describe('容器管理 Dashboard', () => {
     expect(connectLink).toHaveAttribute('rel', expect.stringContaining('noopener'))
     await userEvent.click(screen.getByRole('button', { name: /作業系統/ }))
     await userEvent.click(await screen.findByRole('option', { name: 'Windows' }))
-    expect(await screen.findByText('opencode-project connect --url wss://tunnel.example/connect --token=secret')).toBeInTheDocument()
+    expect(await screen.findByText('opencode-project upload --url https://tunnel.example/upload --token=upload-secret --project .')).toBeInTheDocument()
+    expect(screen.getByText('opencode-project connect --url wss://tunnel.example/connect --token=connect-secret')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '複製上傳指令' }))
+    expect(writeText).toHaveBeenCalledWith('opencode-project upload --url https://tunnel.example/upload --token=upload-secret --project .')
+    expect(await screen.findByRole('status')).toHaveTextContent('上傳指令已複製')
     await userEvent.click(screen.getByRole('button', { name: '複製連線指令' }))
-    expect(writeText).toHaveBeenCalledWith('opencode-project connect --url wss://tunnel.example/connect --token=secret')
+    expect(writeText).toHaveBeenCalledWith('opencode-project connect --url wss://tunnel.example/connect --token=connect-secret')
     expect(await screen.findByRole('status')).toHaveTextContent('連線指令已複製')
   })
 
