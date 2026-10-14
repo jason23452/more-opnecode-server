@@ -25,6 +25,7 @@ OPENCODE_ADMIN_TOKEN=local-compose-validation-only \
   docker compose -f "${PRODUCTION_COMPOSE_FILE}" config --quiet
 compose config --quiet
 compose build
+compose run --rm backend docker buildx version >/dev/null
 compose up --detach
 
 wait_for_http() {
