@@ -224,6 +224,51 @@ def install_git_credentials(remote: str, credentials: dict[str, str], project: P
     credential_path.chmod(0o600)
 
 
+def install_git_ssh_credentials(remote: str, credentials: dict[str, str], project: Path | None = None) -> None:
+    project = project or PROJECT
+    configured = subprocess.run(["git", "-C", str(project), "remote", "get-url", "origin"],
+                                check=True, capture_output=True, text=True).stdout.strip()
+    def normalized(value: str) -> tuple[str, str, str, str]:
+        parsed = urlsplit(value)
+        if parsed.scheme == "ssh" and parsed.hostname:
+            return "ssh", parsed.username or "git", parsed.hostname.lower(), parsed.path.lstrip("/").rstrip("/")
+        match = re.fullmatch(r"(?:(?P<user>[^@/:]+)@)?(?P<host>[^/:]+):(?P<path>.+)", value)
+        if match:
+            return "ssh", match.group("user") or "git", match.group("host").lower(), match.group("path").rstrip("/")
+        raise ValueError("Invalid SSH remote")
+
+    if normalized(remote) != normalized(configured):
+        raise ValueError("Credentials do not match the configured SSH remote")
+    private_key = credentials.get("private_key", "")
+    key_name = credentials.get("key_name", "id_key")
+    if ("PRIVATE KEY-----" not in private_key or "ENCRYPTED" in private_key or
+            not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", key_name) or key_name in {".", "..", "git-ssh"}):
+        raise ValueError("A readable unencrypted SSH private key is required")
+
+    credential_dir = Path(os.environ.get("OPENCODE_SSH_CREDENTIAL_DIR", "/run/opencode/ssh"))
+    credential_dir.mkdir(parents=True, exist_ok=True)
+    credential_dir.chmod(0o700)
+    key_path = credential_dir / key_name
+    key_path.write_text(private_key)
+    key_path.chmod(0o600)
+    _, user, host, path = normalized(remote)
+    wrapper = credential_dir / "git-ssh"
+    wrapper.write_text("#!/usr/bin/env python3\n" +
+        "import os, shlex, sys\n" +
+        f"expected_user={user!r}; expected_host={host!r}; expected_path={path!r}; key={str(key_path)!r}\n" +
+        "args=sys.argv[1:]\n" +
+        "destination=next((arg for arg in args if '@' in arg and not arg.startswith('-')), '')\n" +
+        "command=next((arg for arg in reversed(args) if 'git-' in arg), '')\n" +
+        "try: words=shlex.split(command)\n" +
+        "except ValueError: words=[]\n" +
+        "if destination != expected_user+'@'+expected_host or len(words)!=2 or words[0] not in ('git-receive-pack','git-upload-pack') or words[1].strip(\"'\\\"\") != expected_path: sys.exit(126)\n" +
+        "os.execvp('ssh', ['ssh','-i',key,'-o','IdentitiesOnly=yes','-o','StrictHostKeyChecking=accept-new',*args])\n")
+    wrapper.chmod(0o700)
+    Path(os.environ.get("HOME", str(Path.home()))).mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "config", "--global", "core.sshCommand", str(wrapper)], check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def _cleanup_stale_project_backups(parent: Path) -> None:
     cutoff = time.time() - SESSION_TTL_SECONDS
     for backup in parent.glob(".project-backup-*"):
@@ -312,7 +357,11 @@ class UploadHandler(BaseHTTPRequestHandler):
                 return
             try:
                 payload = json.loads(data)
-                install_git_credentials(payload["remote"], payload["credentials"])
+                remote = payload["remote"]
+                if urlsplit(remote).scheme == "https":
+                    install_git_credentials(remote, payload["credentials"])
+                else:
+                    install_git_ssh_credentials(remote, payload["credentials"])
             except (ValueError, KeyError, TypeError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as error:
                 self.send_error(400, "Invalid Git credentials or remote association")
                 return

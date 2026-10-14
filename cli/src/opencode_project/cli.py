@@ -6,22 +6,30 @@ import contextlib
 from pathlib import Path
 
 from opencode_project.connect import connect_terminal
-from opencode_project.upload import create_archive, git_https_credentials, upload_archive, upload_git_credentials
+from opencode_project.upload import (
+    create_archive, git_https_credentials, git_ssh_credentials, upload_archive, upload_git_credentials,
+)
 
 
-def prompt_git_credentials(remote: str, credentials_available: bool) -> str:
+def prompt_git_credentials(remote: str, credentials_available: bool, auth_type: str = "HTTPS Git credential helper") -> str:
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         return "upload"
     from urllib.parse import urlsplit
 
     parsed = urlsplit(remote)
-    safe_remote = f"{parsed.scheme}://{parsed.hostname or ''}{parsed.path}"
-    print(f"偵測到 HTTPS Git remote：{safe_remote}")
+    if parsed.scheme and parsed.hostname:
+        safe_remote = f"{parsed.scheme}://{parsed.hostname}{parsed.path}"
+    elif "@" in remote and ":" in remote:
+        authority, _, path = remote.partition(":")
+        safe_remote = f"ssh://{authority.rsplit('@', 1)[-1]}/{path.lstrip('/')}"
+    else:
+        safe_remote = remote
+    print(f"偵測到 {auth_type.split(':', 1)[0]} Git remote：{safe_remote}")
     if credentials_available:
-        print("本機 Git credential helper 已提供認證（帳密/token 已遮蔽）。")
+        print(f"本機 {auth_type} 已提供認證（秘密內容已遮蔽）。")
         print("[1] 傳送認證並上傳  [2] 只上傳專案（不帶認證）  [3] 取消")
     else:
-        print("本機 Git credential helper 無法提供此 remote 的認證。")
+        print(f"本機無法取得此 remote 的 {auth_type} 認證。")
         print("[2] 只上傳專案（不帶認證）  [3] 取消")
     choice = input("請選擇 [1/2/3]：").strip()
     return {"1": "send", "2": "upload", "3": "cancel"}.get(choice, "cancel")
@@ -57,10 +65,16 @@ def main() -> None:
         if bool(args.connect_url) != bool(args.connect_token):
             raise ValueError("--connect-url 與 --connect-token 必須一起提供")
         git_auth = git_https_credentials(args.project)
+        auth_type = "HTTPS Git credential helper"
+        if git_auth is None:
+            git_auth = git_ssh_credentials(args.project)
+            auth_type = f"SSH key: {git_auth[1]['key_name']}" if git_auth and git_auth[1].get("key_name") else "SSH key"
         decision = "upload"
         if git_auth:
             remote, credentials = git_auth
-            decision = prompt_git_credentials(remote, bool(credentials))
+            decision = (prompt_git_credentials(remote, bool(credentials))
+                        if auth_type == "HTTPS Git credential helper"
+                        else prompt_git_credentials(remote, bool(credentials), auth_type))
             if decision == "cancel":
                 print("已取消上傳。")
                 return

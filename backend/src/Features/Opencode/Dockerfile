@@ -1,7 +1,7 @@
 FROM node:22-bookworm-slim
 ARG TARGETARCH
 ENV PATH="/root/.local/bin:${PATH}"
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates python3 python3-venv procps nginx && \
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates git openssh-client python3 python3-venv procps nginx && \
     curl -LsSf https://astral.sh/uv/install.sh | sh && \
     uv pip install --system --break-system-packages 'websockets>=13,<16' && \
     npm install --global pnpm opencode-ai @opencode-ai/sdk && \

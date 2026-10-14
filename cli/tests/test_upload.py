@@ -199,6 +199,124 @@ class UploadTests(unittest.TestCase):
             {"username": "alice", "password": "secret"}, retries=3,
         )
 
+    def test_upload_prompts_and_transmits_available_ssh_key_separately(self):
+        from opencode_project.cli import main
+
+        auth = ("git@git.example:team/repo.git", {"private_key": "SSH-PRIVATE-KEY", "key_name": "id_ed25519"})
+        with patch("opencode_project.cli.create_archive", return_value=b"zip"), \
+                patch("opencode_project.cli.git_https_credentials", return_value=None), \
+                patch("opencode_project.cli.git_ssh_credentials", return_value=auth), \
+                patch("opencode_project.cli.prompt_git_credentials", return_value="send") as prompt, \
+                patch("opencode_project.cli.upload_archive") as project_upload, \
+                patch("opencode_project.cli.upload_git_credentials") as credential_upload, \
+                patch("sys.argv", ["opencode-project", "upload", "--url", "https://container/upload",
+                                    "--token", "upload-token", "--project", "."]):
+            main()
+
+        prompt.assert_called_once_with(auth[0], True, "SSH key: id_ed25519")
+        project_upload.assert_called_once_with("https://container/upload", "upload-token", b"zip", retries=3)
+        credential_upload.assert_called_once_with(
+            "https://container/upload", "upload-token", auth[0], auth[1], retries=3,
+        )
+
+    def test_ssh_upload_without_available_key_still_offers_project_only_or_cancel(self):
+        from opencode_project.cli import main
+
+        with patch("opencode_project.cli.create_archive", return_value=b"zip"), \
+                patch("opencode_project.cli.git_https_credentials", return_value=None), \
+                patch("opencode_project.cli.git_ssh_credentials", return_value=("git@git.example:team/repo.git", {})), \
+                patch("opencode_project.cli.prompt_git_credentials", return_value="upload") as prompt, \
+                patch("opencode_project.cli.upload_archive") as project_upload, \
+                patch("opencode_project.cli.upload_git_credentials") as credential_upload, \
+                patch("sys.argv", ["opencode-project", "upload", "--url", "https://container/upload",
+                                    "--token", "upload-token", "--project", "."]):
+            main()
+
+        prompt.assert_called_once_with("git@git.example:team/repo.git", False, "SSH key")
+        project_upload.assert_called_once()
+        credential_upload.assert_not_called()
+
+    def test_ssh_confirmation_masks_remote_and_offers_explicit_choices(self):
+        from opencode_project.cli import prompt_git_credentials
+
+        class TTY(io.StringIO):
+            def isatty(self):
+                return True
+
+        output = TTY()
+        with patch("opencode_project.cli.sys.stdin", TTY("1\n")), \
+                patch("opencode_project.cli.sys.stdout", output):
+            choice = prompt_git_credentials("ssh://git:secret@git.example/team/repo.git", True, "SSH key: id_ed25519")
+
+        self.assertEqual(choice, "send")
+        self.assertIn("SSH key", output.getvalue())
+        self.assertIn("[1] 傳送認證並上傳", output.getvalue())
+        self.assertIn("[2] 只上傳專案（不帶認證）", output.getvalue())
+        self.assertIn("[3] 取消", output.getvalue())
+        self.assertNotIn("secret", output.getvalue())
+
+    def test_ssh_confirmation_without_key_explains_unavailable_source(self):
+        from opencode_project.cli import prompt_git_credentials
+
+        class TTY(io.StringIO):
+            def isatty(self):
+                return True
+
+        output = TTY()
+        with patch("opencode_project.cli.sys.stdin", TTY("2\n")), \
+                patch("opencode_project.cli.sys.stdout", output):
+            choice = prompt_git_credentials("git@git.example:team/repo.git", False, "SSH key")
+
+        self.assertEqual(choice, "upload")
+        self.assertIn("無法取得此 remote 的 SSH key 認證", output.getvalue())
+        self.assertIn("[2] 只上傳專案（不帶認證）", output.getvalue())
+        self.assertIn("[3] 取消", output.getvalue())
+        self.assertNotIn("[1]", output.getvalue())
+
+    def test_ssh_upload_noninteractive_does_not_transmit_detected_key(self):
+        from opencode_project.cli import main
+
+        with patch("opencode_project.cli.create_archive", return_value=b"zip"), \
+                patch("opencode_project.cli.git_https_credentials", return_value=None), \
+                patch("opencode_project.cli.git_ssh_credentials", return_value=(
+                    "git@git.example:repo.git", {"private_key": "key", "key_name": "id_ed25519"})), \
+                patch("opencode_project.cli.upload_archive") as project_upload, \
+                patch("opencode_project.cli.upload_git_credentials") as credential_upload, \
+                patch("opencode_project.cli.sys.stdin") as stdin, \
+                patch("opencode_project.cli.sys.stdout") as stdout, \
+                patch("sys.argv", ["opencode-project", "upload", "--url", "https://container/upload",
+                                    "--token", "upload-token", "--project", "."]):
+            stdin.isatty.return_value = False
+            stdout.isatty.return_value = False
+            main()
+
+        project_upload.assert_called_once()
+        credential_upload.assert_not_called()
+
+    def test_ssh_key_detection_uses_identity_file_resolved_by_ssh(self):
+        from opencode_project.upload import git_ssh_credentials
+
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary) / "project"
+            project.mkdir()
+            key = Path(temporary) / "id_ed25519"
+            key.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\nprivate\n-----END OPENSSH PRIVATE KEY-----\n")
+            subprocess.run(["git", "init", "-q", str(project)], check=True)
+            subprocess.run(["git", "-C", str(project), "remote", "add", "origin",
+                            "git@git.example:team/repo.git"], check=True)
+            original_run = subprocess.run
+            with patch("opencode_project.upload.subprocess.run", side_effect=[
+                    original_run(["git", "-C", str(project), "remote", "get-url", "origin"],
+                                 check=True, capture_output=True, text=True),
+                    subprocess.CompletedProcess([], 0, f"hostname git.example\nidentityfile {key}\n", ""),
+            ]):
+                found = git_ssh_credentials(project)
+
+        self.assertEqual(found, ("git@git.example:team/repo.git", {
+            "private_key": "-----BEGIN OPENSSH PRIVATE KEY-----\nprivate\n-----END OPENSSH PRIVATE KEY-----\n",
+            "key_name": "id_ed25519",
+        }))
+
     def test_upload_without_credentials_does_not_offer_or_send_credentials(self):
         from opencode_project.cli import main
 
@@ -294,6 +412,17 @@ class UploadTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "HTTPS"):
             upload.upload_git_credentials("http://container/upload", "token", "https://git.example/repo",
                                           {"username": "a", "password": "b"})
+
+        with patch("opencode_project.upload._request", return_value=b"") as ssh_request:
+            upload.upload_git_credentials(
+                "https://container.example/upload", "upload-capability", "git@git.example:team/repo.git",
+                {"private_key": "private-key", "key_name": "id_ed25519"},
+            )
+        self.assertEqual(ssh_request.call_args.args[0], "https://container.example/upload/git-credentials")
+        self.assertEqual(json.loads(ssh_request.call_args.args[2]), {
+            "remote": "git@git.example:team/repo.git",
+            "credentials": {"private_key": "private-key", "key_name": "id_ed25519"},
+        })
 
     def test_credential_transfer_failure_fails_upload_command(self):
         from opencode_project.cli import main
