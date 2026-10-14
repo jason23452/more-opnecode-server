@@ -9,6 +9,7 @@
 - [x] 正式 Compose 使用 GHCR 前端與 API 後端映像，不包含 `build` 設定，且可在部署主機 pull 後啟動服務。
 - [x] 前端以 `0.0.0.0:3000` 提供單一服務入口，並以 runtime config 使用同源相對 `/api` 路徑；前端 Nginx 經 Compose 內部網路代理至 backend。
 - [x] API 後端映像包含 Docker CLI 與 Buildx plugin，可透過同主機 Docker daemon 建置 OpenCode 容器映像及管理容器。
+- [x] API 後端映像包含 curl 與 CA certificates，使 Tunnel HTTPS 健康探測能在容器內執行。
 - [x] 正式服務所需機密與環境設定由部署環境提供，不需提交機密至 repository；必要憑證未設定時 Compose 會拒絕解析。
 - [x] 正式 Compose 可在未提供真實機密值的本機情境下以 throwaway 驗證值解析，且正式 Compose 檔名為 `docker-compose.prod.yaml`。
 - [x] 正式 Compose 不將 OpenCode 容器或 Cloudflare Quick Tunnel 定義為固定的應用服務。
@@ -16,4 +17,4 @@
 - [x] 管理 API 透過公開前端入口可達，管理端點仍要求 `OPENCODE_ADMIN_TOKEN`。
 - [x] 前端建立容器請求不受一般 15 秒 API timeout 截斷（該請求 timeout 為 0）；Nginx `/api/` proxy read timeout 為 600 秒，可等待 image build/容器初始化回應。
 
-**Validation:** 前端 ContainerDashboard 測試 13 passed，涵蓋 Axios 一般 timeout 設為 1ms 時建立 API 仍使用 timeout 0 並完成 delayed response；Windows Docker Compose build/up 驗證前端 Nginx 設定及 API health routing。另已驗證 backend container 內 `docker buildx version` 與實際 OpenCode image build。
+**Validation:** 前端 ContainerDashboard 測試 13 passed，涵蓋 Axios 一般 timeout 設為 1ms 時建立 API 仍使用 timeout 0 並完成 delayed response；Windows Docker Compose build/up 驗證前端 Nginx 設定及 API health routing。另已驗證 backend container 內 `curl --version`、`docker buildx version` 與實際 OpenCode image build。

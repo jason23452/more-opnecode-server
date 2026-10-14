@@ -47,7 +47,7 @@ Status: ready-for-agent
 - 建立 OpenCode 容器的前端 API 請求不使用一般短請求 timeout；前端 Nginx 的 `/api/` upstream read timeout 設為 600 秒，以容納 OpenCode image 首次建置及容器初始化。
 - 正式服務入口由前端容器提供，host port 綁定 `0.0.0.0:3000`（可用 `FRONTEND_PORT` 設定 host port）；前端 Nginx 將 `/api/` 代理到 Compose 內部網路中的 `backend:8000`。後端不映射 host port。
 - 公開前端入口也會使管理 API 路徑可從該入口到達；後端管理端點使用既有 `OPENCODE_ADMIN_TOKEN` 驗證。遵循 ADR「公開前端入口與容器內部 API 網路」及既有 Tunnel CLI 資料路徑決策。
-- API 後端必須能呼叫部署主機 Docker daemon，並在其容器映像中提供 Docker CLI 與 Buildx CLI plugin，以支援建立 OpenCode 容器映像及管理容器。維持既有由同主機 Docker 管理 OpenCode 容器的架構；不得將此應用服務與 OpenCode 容器領域概念混為一談。
+- API 後端映像需包含 `curl` 與 CA certificates，供後端對 Tunnel URL 執行 HTTPS 健康探測；亦需包含 Docker CLI 與 Buildx CLI plugin，透過部署主機 Docker daemon 建置 OpenCode 容器映像及管理容器。維持既有由同主機 Docker 管理 OpenCode 容器的架構；不得將此應用服務與 OpenCode 容器領域概念混為一談。
 - 前後端 GHCR 映像名稱分別為 `ghcr.io/jason23452/more-opnecode-server-frontend` 與 `ghcr.io/jason23452/more-opnecode-server-backend`。每次符合 `v*` 的版本 tag 建置並發布該版本 tag 與 `latest` 兩個 image tag。
 - GitHub Actions 使用兩階段工作：GitHub-hosted runner 建置並以 production environment 的 `GHCR_PAT` classic personal access token 發布 GHCR 映像；發布成功後，使用名稱為 `bojii-system`、labels 為 `self-hosted`、`Linux`、`X64`、`more-opencode-server` 的 runner 登入 GHCR 並部署。PAT 至少需具備 `read:packages` 與 `write:packages` scope；存取 private repository package 時另需適當 repository 權限。
 - 部署 workflow 確保 `/home/bojii/more-opencode-server` 是目標 repository 工作目錄（若該目錄尚無 Git metadata，先初始化），更新至觸發的 tag 並保留未納入版本控制的部署設定。workflow 將 `docker-compose.prod.yaml` 複製為 `docker-compose.yaml`，登入 GHCR、執行 `docker compose pull`，再以 `docker compose up -d` 啟動服務；正式部署不得執行 `docker compose build`。
@@ -63,7 +63,7 @@ Status: ready-for-agent
 - 主要測試 seam 為 Docker Compose 整合邊界。本機驗證入口解析正式與本機 Compose 設定，建置並啟動本機前後端服務，從 HTTP 入口確認前端可用，並確認 API 健康端點可達，結束後清理服務。
 - GitHub Actions 的行為驗收以 workflow 執行條件與部署操作為界：確認 `v*` tag 先發布兩個 GHCR 映像，再於符合指定 labels 的 self-hosted runner 更新指定工作目錄、產生部署用標準 Compose 檔、pull 最新映像並啟動；不要求 PR 或一般測試連線至實際 self-hosted 部署主機。
 - Workflow 可對非部署分支或非 `v*` tag 的事件做靜態/隔離驗證，確認不會執行正式部署動作。真正部署主機的發佈驗收由 tag workflow 的執行結果確認。
-- 前端已有 production build 與 typecheck 指令；後端已有 pytest 測試及 `/api/health` 健康端點。容器驗證應保留這些既有模組層級檢查，Compose smoke test 則覆蓋它們無法驗證的跨容器網路、runtime config、服務入口，以及 backend Docker CLI 的 Buildx plugin 可用性。
+- 前端已有 production build 與 typecheck 指令；後端已有 pytest 測試及 `/api/health` 健康端點。容器驗證應保留這些既有模組層級檢查，Compose smoke test 則覆蓋它們無法驗證的跨容器網路、runtime config、服務入口，以及 backend container 中 curl、Docker CLI 與 Buildx plugin 的可用性。
 - 前端容器建立請求測試需確認建立 API 的 Axios timeout 設為無期限、不沿用一般 15 秒 timeout；Nginx `/api/` 設定需允許等待 upstream 最長 600 秒。
 - 本機驗證依賴可用 Docker Compose/daemon；CI workflow 部署驗證依賴具備 Docker 權限與指定標籤的 self-hosted runner。測試不得要求 Cloudflare Quick Tunnel 或其外網 URL 才能驗證前後端應用服務整合。
 
