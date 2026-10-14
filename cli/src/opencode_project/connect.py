@@ -6,8 +6,10 @@ import re
 import select
 import ssl
 import shutil
+import struct
 import sys
-from urllib.parse import urlsplit
+import threading
+from urllib.parse import urlsplit, urlunsplit
 
 try:
     import termios
@@ -25,6 +27,7 @@ from websockets.sync.client import connect as websocket_connect
 from websockets.exceptions import ConnectionClosed
 
 from .clipboard import read_clipboard_files
+from .agent_socket import connect_agent, ssh_agent_address
 from .tls import create_ssl_context
 
 _CLIPBOARD_FILE_PREFIX = b"\x00OPENCODE_CLIPBOARD_FILE_V1\x00"
@@ -37,6 +40,107 @@ _TERMINAL_QUERY_REPLIES = re.compile(
     rb"\x1b\]10;rgb:[0-9a-fA-F/]+(?:\x07|\x1b\\)"  # foreground-color report
 )
 _PENDING_WINDOWS_KEY_PREFIX = False
+_MAX_AGENT_PACKET = 256 * 1024
+_AGENT_RELAY_READY = "opencode-ssh-agent-ready-v1"
+
+
+def _valid_agent_packet(packet: bytes) -> bool:
+    return (5 <= len(packet) <= _MAX_AGENT_PACKET + 4
+            and struct.unpack(">I", packet[:4])[0] == len(packet) - 4)
+
+
+def _allowed_agent_request(packet: bytes) -> bool:
+    if not _valid_agent_packet(packet):
+        return False
+    if packet[4] in {11, 13}:  # Request identities / sign request.
+        return True
+    if packet[4] != 27:  # SSH_AGENTC_EXTENSION
+        return False
+    payload = packet[5:]
+    if len(payload) < 4:
+        return False
+    extension_size = struct.unpack(">I", payload[:4])[0]
+    return payload[4:4 + extension_size] == b"session-bind@openssh.com"
+
+
+def _allowed_agent_response(request: bytes, response: bytes) -> bool:
+    if not _valid_agent_packet(response):
+        return False
+    expected = {11: 12, 13: 14, 27: 6}.get(request[4])
+    return response[4] == 5 or response[4] == expected
+
+
+def _read_agent_packet(agent) -> bytes:
+    header = bytearray()
+    while len(header) < 4:
+        chunk = agent.recv(4 - len(header))
+        if not chunk:
+            raise ConnectionError("本機 SSH agent 已中斷")
+        header.extend(chunk)
+    size = struct.unpack(">I", header)[0]
+    if not 1 <= size <= _MAX_AGENT_PACKET:
+        raise ValueError("本機 SSH agent 回覆超過允許大小")
+    payload = bytearray()
+    while len(payload) < size:
+        chunk = agent.recv(size - len(payload))
+        if not chunk:
+            raise ConnectionError("本機 SSH agent 回覆不完整")
+        payload.extend(chunk)
+    return bytes(header + payload)
+
+
+def _agent_tunnel_url(url: str) -> str:
+    parsed = urlsplit(url)
+    return urlunsplit((parsed.scheme, parsed.netloc, "/ssh-agent", "", ""))
+
+
+def _forward_agent_requests(url: str, token: str, stop: threading.Event) -> None:
+    socket_path = ssh_agent_address()
+    if not socket_path:
+        return
+    options = {
+        "additional_headers": {"Authorization": f"Bearer {token}"},
+        "max_size": _MAX_AGENT_PACKET + 4,
+        "ping_interval": 20,
+        "close_timeout": 1,
+    }
+    if urlsplit(url).scheme == "wss":
+        options["ssl"] = create_ssl_context()
+    failures = 0
+    while not stop.is_set():
+        try:
+            with websocket_connect(_agent_tunnel_url(url), **options) as relay:
+                if relay.recv(timeout=5) != _AGENT_RELAY_READY:
+                    raise RuntimeError("容器 SSH agent relay 未就緒")
+                with connect_agent(socket_path) as agent:
+                    if hasattr(agent, "settimeout"):
+                        agent.settimeout(10)
+                    while not stop.is_set():
+                        try:
+                            packet = relay.recv(timeout=0.1)
+                        except TimeoutError:
+                            continue
+                        if not isinstance(packet, bytes) or not _allowed_agent_request(packet):
+                            raise RuntimeError("容器傳回無效 SSH agent 封包")
+                        agent.sendall(packet)
+                        response = _read_agent_packet(agent)
+                        if not _allowed_agent_response(packet, response):
+                            raise RuntimeError("本機 SSH agent 傳回不符合協定的回應")
+                        relay.send(response)
+        except (OSError, RuntimeError, TimeoutError, ssl.SSLError, ConnectionClosed) as error:
+            if stop.wait(0.25):
+                return
+            # The TUI handshake may complete just before the server marks the
+            # session active; retry until its authenticated relay is ready.
+            if isinstance(error, ConnectionClosed) and error.rcvd and error.rcvd.code == 4401:
+                print(f"SSH agent 即時轉送未啟用：{error}", file=sys.stderr)
+                return
+            failures += 1
+            if failures == 5:
+                print(f"SSH agent 即時轉送尚未就緒，將持續重試：{error}", file=sys.stderr)
+        except Exception as error:
+            print(f"SSH agent relay failed: {type(error).__name__}: {error}", file=sys.stderr)
+            return
 
 
 def _known_close_message(code: int | None) -> str | None:
@@ -123,7 +227,7 @@ def _send_terminal_input(remote, data: bytes) -> None:
         remote.send(bytes(pending))
 
 
-def connect_terminal(url: str, token: str) -> None:
+def connect_terminal(url: str, token: str, forward_ssh_agent: bool = False) -> None:
     global _PENDING_WINDOWS_KEY_PREFIX
     _PENDING_WINDOWS_KEY_PREFIX = False
     old_settings = None
@@ -140,28 +244,40 @@ def connect_terminal(url: str, token: str) -> None:
         if urlsplit(url).scheme == "wss":
             connection_options["ssl"] = create_ssl_context()
         with websocket_connect(url, **connection_options) as remote:
-            last_size = None
-            while True:
-                size = terminal_size()
-                if size != last_size:
-                    columns, rows = size
-                    remote.send(json.dumps(
-                        {"type": "resize", "columns": columns, "rows": rows},
-                        separators=(",", ":"),
-                    ))
-                    last_size = size
-                data = _terminal_input()
-                if data:
-                    _send_terminal_input(remote, data)
-                    if b"\x03" in data:
-                        return
-                try:
-                    output = remote.recv(timeout=0.05)
-                except TimeoutError:
-                    continue
-                if isinstance(output, bytes):
-                    sys.stdout.buffer.write(output)
-                    sys.stdout.buffer.flush()
+            agent_stop = threading.Event()
+            agent_thread = None
+            if forward_ssh_agent and ssh_agent_address():
+                agent_thread = threading.Thread(
+                    target=_forward_agent_requests, args=(url, token, agent_stop), daemon=True,
+                )
+                agent_thread.start()
+            try:
+                last_size = None
+                while True:
+                    size = terminal_size()
+                    if size != last_size:
+                        columns, rows = size
+                        remote.send(json.dumps(
+                            {"type": "resize", "columns": columns, "rows": rows},
+                            separators=(",", ":"),
+                        ))
+                        last_size = size
+                    data = _terminal_input()
+                    if data:
+                        _send_terminal_input(remote, data)
+                        if b"\x03" in data:
+                            return
+                    try:
+                        output = remote.recv(timeout=0.05)
+                    except TimeoutError:
+                        continue
+                    if isinstance(output, bytes):
+                        sys.stdout.buffer.write(output)
+                        sys.stdout.buffer.flush()
+            finally:
+                agent_stop.set()
+                if agent_thread is not None:
+                    agent_thread.join(timeout=1)
     except KeyboardInterrupt:
         print("\n遠端 TUI 連線已中斷。可再次執行 connect 重新連線。", file=sys.stderr)
     except ConnectionClosed as error:

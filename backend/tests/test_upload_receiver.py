@@ -124,12 +124,9 @@ def test_receiver_installs_remote_scoped_ssh_key_outside_project_config(tmp_path
     monkeypatch.setenv("OPENCODE_SSH_CREDENTIAL_DIR", str(credential_dir))
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "global-gitconfig"))
-    key = "-----BEGIN OPENSSH PRIVATE KEY-----\nprivate\n-----END OPENSSH PRIVATE KEY-----\n"
+    receiver.install_git_ssh_credentials(remote, {"agent_forwarding": True}, project)
 
-    receiver.install_git_ssh_credentials(remote, {"private_key": key, "key_name": "id_ed25519"}, project)
-
-    assert (credential_dir / "id_ed25519").read_text() == key
-    assert (credential_dir / "id_ed25519").stat().st_mode & 0o777 == 0o600
+    assert list(credential_dir.iterdir()) == [credential_dir / "git-ssh"]
     assert "private" not in (project / ".git" / "config").read_text()
     ssh_command = subprocess.run(["git", "-C", str(project), "config", "--get", "core.sshCommand"],
                                  check=True, capture_output=True, text=True).stdout.strip()
@@ -148,8 +145,8 @@ def test_receiver_installs_remote_scoped_ssh_key_outside_project_config(tmp_path
     ssh_stub.write_text(
         "#!/usr/bin/env python3\n"
         "import os, sys\n"
-        f"expected_key={str(credential_dir / 'id_ed25519')!r}\n"
-        "assert sys.argv[sys.argv.index('-i') + 1] == expected_key\n"
+        "expected_socket='/run/opencode/ssh-agent.sock'\n"
+        "assert sys.argv[sys.argv.index('-o') + 1] == 'IdentityAgent=' + expected_socket\n"
         f"os.execvp('git-receive-pack', ['git-receive-pack', {str(bare_remote)!r}])\n"
     )
     ssh_stub.chmod(0o700)
@@ -177,8 +174,7 @@ def test_ssh_remote_association_ignores_scp_style_password_userinfo(tmp_path, mo
 
     receiver.install_git_ssh_credentials(
         remote,
-        {"private_key": "-----BEGIN OPENSSH PRIVATE KEY-----\nprivate\n-----END OPENSSH PRIVATE KEY-----\n",
-         "key_name": "id_ed25519"},
+        {"agent_forwarding": True},
         project,
     )
 
@@ -221,7 +217,7 @@ def test_git_credential_upload_requires_container_upload_token(tmp_path, monkeyp
         thread.join(timeout=2)
 
 
-def test_authorized_upload_endpoint_installs_ssh_key_for_configured_remote(tmp_path, monkeypatch) -> None:
+def test_authorized_upload_endpoint_installs_agent_forwarding_for_configured_remote(tmp_path, monkeypatch) -> None:
     import json
     import src.Features.Opencode.upload_receiver as receiver
 
@@ -238,10 +234,7 @@ def test_authorized_upload_endpoint_installs_ssh_key_for_configured_remote(tmp_p
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     url = f"http://127.0.0.1:{server.server_port}/upload/git-credentials"
-    data = json.dumps({"remote": remote, "credentials": {
-        "private_key": "-----BEGIN OPENSSH PRIVATE KEY-----\nprivate\n-----END OPENSSH PRIVATE KEY-----\n",
-        "key_name": "id_ed25519",
-    }}).encode()
+    data = json.dumps({"remote": remote, "credentials": {"agent_forwarding": True}}).encode()
     try:
         with pytest.raises(HTTPError) as error:
             urlopen(Request(url, data=data, method="PUT"))
@@ -251,7 +244,7 @@ def test_authorized_upload_endpoint_installs_ssh_key_for_configured_remote(tmp_p
         })
         with urlopen(request) as response:
             assert response.status == 204
-        assert (tmp_path / "runtime" / "ssh" / "id_ed25519").exists()
+        assert (tmp_path / "runtime" / "ssh" / "git-ssh").exists()
         assert "private" not in (project / ".git" / "config").read_text()
     finally:
         server.shutdown()

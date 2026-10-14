@@ -231,10 +231,10 @@ class UploadTests(unittest.TestCase):
             {"username": "alice", "password": "secret"}, retries=3,
         )
 
-    def test_upload_prompts_and_transmits_available_ssh_key_separately(self):
+    def test_upload_authorizes_remote_scoped_ssh_agent_forwarding_without_key_bytes(self):
         from opencode_project.cli import main
 
-        auth = ("git@git.example:team/repo.git", {"private_key": "SSH-PRIVATE-KEY", "key_name": "id_ed25519"})
+        auth = ("git@git.example:team/repo.git", {"agent_forwarding": True})
         with patch("opencode_project.cli.create_archive", return_value=b"zip"), \
                 patch("opencode_project.cli.git_https_credentials", return_value=None), \
                 patch("opencode_project.cli.git_ssh_credentials", return_value=auth), \
@@ -245,7 +245,7 @@ class UploadTests(unittest.TestCase):
                                     "--token", "upload-token", "--project", "."]):
             main()
 
-        prompt.assert_called_once_with(auth[0], True, "SSH key: id_ed25519")
+        prompt.assert_called_once_with(auth[0], True, "SSH agent forwarding")
         project_upload.assert_called_once_with("https://container/upload", "upload-token", b"zip", retries=3)
         credential_upload.assert_called_once_with(
             "https://container/upload", "upload-token", auth[0], auth[1], retries=3,
@@ -264,7 +264,7 @@ class UploadTests(unittest.TestCase):
                                     "--token", "upload-token", "--project", "."]):
             main()
 
-        prompt.assert_called_once_with("git@git.example:team/repo.git", False, "SSH key")
+        prompt.assert_called_once_with("git@git.example:team/repo.git", False, "SSH agent forwarding")
         project_upload.assert_called_once()
         credential_upload.assert_not_called()
 
@@ -278,10 +278,10 @@ class UploadTests(unittest.TestCase):
         output = TTY()
         with patch("opencode_project.cli.sys.stdin", TTY("1\n")), \
                 patch("opencode_project.cli.sys.stdout", output):
-            choice = prompt_git_credentials("ssh://git:secret@git.example/team/repo.git", True, "SSH key: id_ed25519")
+            choice = prompt_git_credentials("ssh://git:secret@git.example/team/repo.git", True, "SSH agent forwarding")
 
         self.assertEqual(choice, "send")
-        self.assertIn("SSH key", output.getvalue())
+        self.assertIn("SSH agent forwarding", output.getvalue())
         self.assertIn("[1] 傳送認證並上傳", output.getvalue())
         self.assertIn("[2] 只上傳專案（不帶認證）", output.getvalue())
         self.assertIn("[3] 取消", output.getvalue())
@@ -297,10 +297,10 @@ class UploadTests(unittest.TestCase):
         output = TTY()
         with patch("opencode_project.cli.sys.stdin", TTY("2\n")), \
                 patch("opencode_project.cli.sys.stdout", output):
-            choice = prompt_git_credentials("git@git.example:team/repo.git", False, "SSH key")
+            choice = prompt_git_credentials("git@git.example:team/repo.git", False, "SSH agent forwarding")
 
         self.assertEqual(choice, "upload")
-        self.assertIn("無法取得此 remote 的 SSH key 認證", output.getvalue())
+        self.assertIn("無法取得此 remote 的 SSH agent forwarding 認證", output.getvalue())
         self.assertIn("[2] 只上傳專案（不帶認證）", output.getvalue())
         self.assertIn("[3] 取消", output.getvalue())
         self.assertNotIn("[1]", output.getvalue())
@@ -311,7 +311,7 @@ class UploadTests(unittest.TestCase):
         with patch("opencode_project.cli.create_archive", return_value=b"zip"), \
                 patch("opencode_project.cli.git_https_credentials", return_value=None), \
                 patch("opencode_project.cli.git_ssh_credentials", return_value=(
-                    "git@git.example:repo.git", {"private_key": "key", "key_name": "id_ed25519"})), \
+                    "git@git.example:repo.git", {"agent_forwarding": True})), \
                 patch("opencode_project.cli.upload_archive") as project_upload, \
                 patch("opencode_project.cli.upload_git_credentials") as credential_upload, \
                 patch("opencode_project.cli.sys.stdin") as stdin, \
@@ -325,31 +325,28 @@ class UploadTests(unittest.TestCase):
         project_upload.assert_called_once()
         credential_upload.assert_not_called()
 
-    def test_ssh_key_detection_uses_identity_file_resolved_by_ssh(self):
+    def test_ssh_authentication_uses_loaded_agent_without_reading_identity_files(self):
         from opencode_project.upload import git_ssh_credentials
 
         with tempfile.TemporaryDirectory() as temporary:
             project = Path(temporary) / "project"
             project.mkdir()
-            key = Path(temporary) / "id_ed25519"
-            key.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\nprivate\n-----END OPENSSH PRIVATE KEY-----\n")
             subprocess.run(["git", "init", "-q", str(project)], check=True)
             subprocess.run(["git", "-C", str(project), "remote", "add", "origin",
-                            "git@git.example:team/repo.git"], check=True)
+                            "git:scp-password@git.example:team/repo.git"], check=True)
             original_run = subprocess.run
-            with patch("opencode_project.upload.subprocess.run", side_effect=[
-                    original_run(["git", "-C", str(project), "remote", "get-url", "origin"],
-                                 check=True, capture_output=True, text=True),
-                    subprocess.CompletedProcess([], 0, f"hostname git.example\nidentityfile {key}\n", ""),
-            ]):
+            def run(args, **kwargs):
+                if args[:2] == ["ssh-add", "-L"]:
+                    return subprocess.CompletedProcess(args, 0, "ssh-ed25519 AAAA loaded-key\n", "")
+                return original_run(args, **kwargs)
+
+            with patch("opencode_project.upload.subprocess.run", side_effect=run), \
+                    patch.dict(os.environ, {"SSH_AUTH_SOCK": "/tmp/test-agent.sock"}):
                 found = git_ssh_credentials(project)
 
-        self.assertEqual(found, ("git@git.example:team/repo.git", {
-            "private_key": "-----BEGIN OPENSSH PRIVATE KEY-----\nprivate\n-----END OPENSSH PRIVATE KEY-----\n",
-            "key_name": "id_ed25519",
-        }))
+        self.assertEqual(found, ("git@git.example:team/repo.git", {"agent_forwarding": True}))
 
-    def test_ssh_agent_identity_is_reported_as_unsupported_instead_of_missing_auth(self):
+    def test_loaded_ssh_agent_identity_is_available_without_exporting_private_key(self):
         from opencode_project.upload import git_ssh_credentials
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -370,8 +367,32 @@ class UploadTests(unittest.TestCase):
                     patch.dict(os.environ, {"SSH_AUTH_SOCK": "/tmp/agent.sock"}):
                 detected = git_ssh_credentials(project)
 
-        self.assertIn("ssh-agent", detected[1]["unsupported"])
+        self.assertTrue(detected[1]["agent_forwarding"])
         self.assertNotIn("private_key", detected[1])
+
+    def test_windows_ssh_agent_uses_the_openssh_named_pipe_when_environment_is_unset(self):
+        from opencode_project.agent_socket import WINDOWS_AGENT_PIPE, ssh_agent_address
+
+        with patch.dict(os.environ, {}, clear=True), patch("opencode_project.agent_socket.os.name", "nt"):
+            self.assertEqual(ssh_agent_address(), WINDOWS_AGENT_PIPE)
+
+    def test_connect_confirmation_explains_agent_is_forwarded_only_for_this_session(self):
+        from opencode_project.cli import prompt_git_credentials
+
+        class TTY(io.StringIO):
+            def isatty(self):
+                return True
+
+        output = TTY()
+        with patch("opencode_project.cli.sys.stdin", TTY("1\n")), \
+                patch("opencode_project.cli.sys.stdout", output):
+            choice = prompt_git_credentials(
+                "git@git.example:team/repo.git", True, "SSH agent forwarding", purpose="connect",
+            )
+
+        self.assertEqual(choice, "send")
+        self.assertIn("連線期間轉送簽章請求", output.getvalue())
+        self.assertIn("只連線（不轉送）", output.getvalue())
 
     def test_upload_without_credentials_does_not_offer_or_send_credentials(self):
         from opencode_project.cli import main
@@ -472,12 +493,12 @@ class UploadTests(unittest.TestCase):
         with patch("opencode_project.upload._request", return_value=b"") as ssh_request:
             upload.upload_git_credentials(
                 "https://container.example/upload", "upload-capability", "git@git.example:team/repo.git",
-                {"private_key": "private-key", "key_name": "id_ed25519"},
+                {"agent_forwarding": True},
             )
         self.assertEqual(ssh_request.call_args.args[0], "https://container.example/upload/git-credentials")
         self.assertEqual(json.loads(ssh_request.call_args.args[2]), {
             "remote": "git@git.example:team/repo.git",
-            "credentials": {"private_key": "private-key", "key_name": "id_ed25519"},
+            "credentials": {"agent_forwarding": True},
         })
 
     def test_credential_transfer_failure_fails_upload_command(self):
@@ -587,6 +608,31 @@ class UploadTests(unittest.TestCase):
             max_size=None, ping_interval=20, close_timeout=2,
         )
         self.assertEqual(remote.recv.call_count, 2)
+
+    def test_connect_stops_agent_forwarder_when_tui_connection_ends(self):
+        import opencode_project.connect as connect
+
+        remote = unittest.mock.MagicMock()
+        remote.__enter__.return_value = remote
+        remote.recv.side_effect = [TimeoutError()]
+        started = threading.Event()
+        stopped = threading.Event()
+
+        def forwarder(url, token, stop):
+            self.assertEqual(url, "wss://tunnel.example/connect")
+            self.assertEqual(token, "scoped-token")
+            started.set()
+            stop.wait(2)
+            stopped.set()
+
+        with patch.dict(os.environ, {"SSH_AUTH_SOCK": "/tmp/local-agent.sock"}), \
+                patch.object(connect, "websocket_connect", return_value=remote), \
+                patch.object(connect, "_forward_agent_requests", side_effect=forwarder), \
+                patch.object(connect, "_terminal_input", return_value=b"\x03"):
+            connect.connect_terminal("wss://tunnel.example/connect", "scoped-token", forward_ssh_agent=True)
+
+        self.assertTrue(started.is_set())
+        self.assertTrue(stopped.is_set())
 
     def test_connect_sends_initial_size_and_only_changed_sizes_as_text_controls(self):
         import opencode_project.connect as connect
@@ -771,7 +817,24 @@ class UploadTests(unittest.TestCase):
                                     "wss://api/connect", "--connect-token", "connect-token"]):
             main()
         self.assertLess(upload.call_count, 2)
-        connect.assert_called_once_with("wss://api/connect", "connect-token")
+        connect.assert_called_once_with("wss://api/connect", "connect-token", forward_ssh_agent=False)
+
+    def test_connect_only_forwards_agent_for_project_with_loaded_ssh_agent(self):
+        from opencode_project.cli import main
+
+        project = Path("/tmp/already-uploaded")
+        with patch("opencode_project.cli.git_ssh_credentials",
+                   return_value=("git@git.example:team/repo.git", {"agent_forwarding": True})), \
+                patch("opencode_project.cli.prompt_git_credentials", return_value="send") as prompt, \
+                patch("opencode_project.cli.connect_terminal") as connect, \
+                patch("sys.argv", ["opencode-project", "connect", "--url", "wss://api/connect",
+                                    "--token", "connect-token", "--project", str(project)]):
+            main()
+
+        prompt.assert_called_once_with(
+            "git@git.example:team/repo.git", True, "SSH agent forwarding", purpose="connect",
+        )
+        connect.assert_called_once_with("wss://api/connect", "connect-token", forward_ssh_agent=True)
 
 
 if __name__ == "__main__":

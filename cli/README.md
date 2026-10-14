@@ -42,19 +42,19 @@ CLI 的上傳請求只送往指定容器的 Tunnel，不會連線至管理 API�
 
 未指定 `--project` 時使用目前目錄。CLI 會保留 `.git` 歷史與 remote（移除 remote URL 內的密碼），並略過 `node_modules`、虛擬環境、編譯產物與常見快取目錄；失敗時會自動重試三次，再次執行相同指令即可重傳。成功後檔案位於該容器的 `/workspace/project`。上傳授權資訊只適用於建立回應中的目標容器，請勿公開分享。
 
-SSH 認證目前支援可讀取的未加密私鑰，並僅套用至該專案；需要即時 SSH agent 轉送的 agent 身分及加密私鑰會明確標示尚未支援，不會被當成可用認證。HTTPS remote 內的 userinfo 及 SSH URL 中的密碼會在封裝或確認提示中移除；SCP-style SSH remote 則保留 SSH 使用者、主機與路徑。
+SSH remote 使用本機目前可用的 `SSH_AUTH_SOCK` agent 身分。上傳確認只傳送 SSH remote 綁定資訊，不會讀取、匯出或傳送私鑰；已載入 agent 的加密私鑰可正常使用。遠端簽章請求只會在 CLI `connect` 的 TUI 工作階段啟用時，透過同一容器 Tunnel 上以 connect token 驗證的 `/ssh-agent` WebSocket 即時轉送，連線中斷時容器端 socket 隨即關閉並移除。容器的 SSH wrapper 僅允許上傳專案所設定的 user、host、port、repository path 與 Git upload/receive-pack 命令；其他 SSH 目的地會被拒絕。若只上傳而未連線，遠端 Git push 不會取得本機 agent。HTTPS remote 內的 userinfo 及 SSH URL 中的密碼會在封裝或確認提示中移除；SCP-style SSH remote 則保留 SSH 使用者、主機與路徑。
 
 CLI 使用隨執行檔打包的公開 CA 憑證驗證 HTTPS 上傳與 WSS 遠端 TUI 連線。若網路使用公司代理或自訂 CA，請先將 `SSL_CERT_FILE` 設為 PEM 格式的受信任 CA 憑證檔，再執行上傳或連線命令。
 
 ## 連入遠端 TUI
 
-建立容器 API 回應會提供容器專屬的 `connect_url`、`connect_token` 與完整連線指令。連線透過 WebSocket 將本機終端與容器中的 OpenCode TUI 互動轉送；授權 token 放在 WebSocket handshake 的 Bearer header，不會暴露於 URL。部署使用 HTTPS 時 API 會提供 WSS 連線網址。
+建立容器 API 回應會提供容器專屬的 `connect_url`、`connect_token` 與完整連線指令。連線透過 WebSocket 將本機終端與容器中的 OpenCode TUI 互動轉送；授權 token 放在 WebSocket handshake 的 Bearer header，不會暴露於 URL。若本機 SSH agent 可用，CLI 另開同一 Tunnel 的 agent relay WebSocket，僅中繼有大小上限的 SSH agent 封包，不接觸私鑰內容。部署使用 HTTPS 時 API 會提供 WSS 連線網址。
 
 ```sh
 opencode-project connect --url "<connect_url>" --token "<connect_token>"
 ```
 
-也可在上傳指令加上 `--connect-url "<connect_url>" --connect-token "<connect_token>"`，上傳成功後自動進入 TUI。連線中斷後重新執行 `connect` 即可重連；同一容器同時只接受一個遠端 TUI 工作階段。
+若需要 SSH agent forwarding，可用 `--project ./my-project` 指定已上傳的本機專案；CLI 會顯示遮蔽後的 SSH remote，並在每次連線前詢問是否只於該 TUI 工作階段啟用 relay。也可在上傳指令加上 `--connect-url "<connect_url>" --connect-token "<connect_token>"`，上傳時確認傳送 SSH agent forwarding 後，上傳成功即進入 TUI。連線中斷後重新執行 `connect` 即可重連；同一容器同時只接受一個遠端 TUI 工作階段。
 
 TUI WebSocket 只連至指定容器 Tunnel。若 URL 過期或網路連線失敗，請透過管理 API 重新查詢目前 `connect_url`，並以原 connect token 重跑 `connect`。
 

@@ -15,6 +15,7 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from .agent_socket import ssh_agent_address
 from .tls import create_ssl_context
 
 EXCLUDED_DIRECTORIES = {
@@ -163,7 +164,7 @@ def _sanitize_git_config(contents: bytes) -> bytes:
 
 
 def git_ssh_credentials(project: Path) -> tuple[str, dict[str, str]] | None:
-    """Return the origin SSH remote and an available unencrypted identity file."""
+    """Return the SSH origin only when a local agent has loaded public identities."""
     try:
         remote = subprocess.run(
             ["git", "-C", str(project), "remote", "get-url", "origin"],
@@ -173,43 +174,19 @@ def git_ssh_credentials(project: Path) -> tuple[str, dict[str, str]] | None:
         return None
     if not _ssh_remote(remote):
         return None
+    remote = sanitize_remote(remote)
 
-    from urllib.parse import urlsplit
-
-    if remote.startswith("ssh://"):
-        parsed = urlsplit(remote)
-        host = parsed.hostname or ""
-    else:
-        host = remote.split("@", 1)[-1].split(":", 1)[0]
+    if not ssh_agent_address():
+        return remote, {}
     try:
-        query = subprocess.run(["ssh", "-G", host], check=True, capture_output=True, text=True)
+        identities = subprocess.run(["ssh-add", "-L"], capture_output=True, text=True, check=True)
     except (OSError, subprocess.CalledProcessError):
         return remote, {}
-    candidates = []
-    for line in query.stdout.splitlines():
-        key, _, value = line.partition(" ")
-        if key.lower() == "identityfile":
-            path = Path(value.strip().strip('"')).expanduser()
-            if path.is_file() and path.suffix != ".pub":
-                candidates.append(path)
-    for path in candidates:
-        try:
-            private_key = path.read_text()
-        except (OSError, UnicodeError):
-            continue
-        if "PRIVATE KEY-----" not in private_key:
-            continue
-        if "ENCRYPTED" in private_key:
-            return remote, {"unsupported": f"偵測到加密 SSH 私鑰 {path.name}；目前不會傳送私鑰或其解密密碼。"}
-        return remote, {"private_key": private_key, "key_name": path.name}
-    if os.environ.get("SSH_AUTH_SOCK"):
-        try:
-            identities = subprocess.run(["ssh-add", "-L"], capture_output=True, text=True, check=True)
-        except (OSError, subprocess.CalledProcessError):
-            identities = None
-        if identities and identities.stdout.strip():
-            return remote, {"unsupported": "偵測到 ssh-agent 身分；目前 Tunnel 尚未提供即時 agent 轉送，因此不會宣稱遠端可使用該身分。"}
-    return remote, {}
+    available = any(
+        line.startswith(("ssh-", "ecdsa-", "sk-")) and len(line.split()) >= 2
+        for line in identities.stdout.splitlines()
+    )
+    return remote, {"agent_forwarding": True} if available else {}
 
 
 def _retry_request(operation, retries: int, current_url: str) -> bytes:
