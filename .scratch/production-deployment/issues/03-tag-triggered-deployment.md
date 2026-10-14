@@ -14,4 +14,4 @@
 - [x] Workflow 由 GitHub Secrets 注入正式部署機密，且不將機密值寫入版本控制或輸出至日誌。
 - [x] 任一更新、複製、建置或啟動步驟失敗時，workflow 以失敗狀態結束。
 
-**Validation:** 部署腳本臨時 Git remote/fake Docker 行為測試 2 passed，驗證選擇 tag、複製設定、保留主機設定、執行 `compose pull`/`up` 且失敗能傳遞。尚未 push `v*` tag 驗證實際 GHCR publish/deploy；GitHub production environment 需設定 `GHCR_PAT`、`OPENCODE_PASSWORD` 與 `OPENCODE_ADMIN_TOKEN` Secrets。
+**Validation:** 部署腳本臨時 Git remote/fake Docker 行為測試 3 passed，涵蓋既有與首次初始化的部署目錄、保留主機設定、`compose pull`/`up` 及錯誤傳遞。GitHub Actions `v0.1.3` 完整成功：前後端映像推送至 GHCR，`bojii-system` runner 拉取映像並完成部署。
