@@ -14,4 +14,4 @@
 - [x] 正式 Compose 不將 OpenCode 容器或 Cloudflare Quick Tunnel 定義為固定的應用服務。
 - [x] 服務入口 host port 僅綁定 loopback；不直接對外公開，供主機本機單一可信服務入口使用。
 
-**Validation:** 正式 Compose 在 Windows Docker 環境完成 config、build、up，並由 loopback 單一入口驗證前端與 API 健康端點；部署腳本行為測試 2 passed。
+**Validation:** 正式 Compose 在 Windows Docker 環境完成 config、build、up，並由 loopback 單一入口驗證前端與 API 健康端點；後端容器內 `docker version` 成功連至 Docker Desktop daemon；部署腳本行為測試 2 passed。
