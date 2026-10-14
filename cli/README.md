@@ -42,6 +42,8 @@ CLI 的上傳請求只送往指定容器的 Tunnel，不會連線至管理 API�
 
 未指定 `--project` 時使用目前目錄。CLI 預設略過 `.git`、`node_modules`、虛擬環境、編譯產物與常見快取目錄；失敗時會自動重試三次，再次執行相同指令即可重傳。成功後檔案位於該容器的 `/workspace/project`。上傳授權資訊只適用於建立回應中的目標容器，請勿公開分享。
 
+CLI 使用隨執行檔打包的公開 CA 憑證驗證 HTTPS Tunnel。若網路使用公司代理或自訂 CA，請先將 `SSL_CERT_FILE` 設為 PEM 格式的受信任 CA 憑證檔，再執行上傳命令。
+
 ## 連入遠端 TUI
 
 建立容器 API 回應會提供容器專屬的 `connect_url`、`connect_token` 與完整連線指令。連線透過 WebSocket 將本機終端與容器中的 OpenCode TUI 互動轉送；授權 token 放在 WebSocket handshake 的 Bearer header，不會暴露於 URL。部署使用 HTTPS 時 API 會提供 WSS 連線網址。
