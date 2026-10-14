@@ -38,6 +38,13 @@ API 文件：<http://localhost:8000/docs>
 
 後端預設允許來自 `http://localhost:3000` 與 `http://127.0.0.1:3000` 的 CORS 請求。
 
+## Docker 部署與驗證
+
+- 本機整合驗證：在 Windows Docker Desktop 環境執行 `bash scripts/verify-local-integration.sh`，建置並啟動前後端，檢查前端與 `/api/health`，結束後清理服務。
+- 正式 Compose 設定為 `docker-compose.prod.yaml`，使用 GHCR 上的前端與後端 `latest` images；部署主機將該檔複製成 `docker-compose.yaml` 後只需 pull 並啟動，不會在部署主機建置映像。
+- push `v*` tag 會先建置前後端 images 並發布至 `ghcr.io/jason23452`，再由 `bojii-system` self-hosted runner 部署。請在 GitHub `production` environment 設定具 `read:packages` 與 `write:packages` scope 的 classic PAT secret `GHCR_PAT`，以及 `OPENCODE_PASSWORD`、`OPENCODE_ADMIN_TOKEN` secrets。
+- 正式服務入口僅綁定部署主機 loopback；外部可信任入口、VPN、TLS 與認證需由部署環境另行設定。
+
 ## 專案說明
 
 - [前端架構、runtime config 與 API client](frontend/README.md)

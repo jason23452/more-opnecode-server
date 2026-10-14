@@ -1,16 +1,12 @@
 services:
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
+    image: ghcr.io/jason23452/more-opnecode-server-frontend:latest
     expose:
       - "80"
     restart: unless-stopped
 
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    image: ghcr.io/jason23452/more-opnecode-server-backend:latest
     environment:
       APP_NAME: ${APP_NAME:-Features Base API}
       API_PREFIX: ${API_PREFIX:-/api}

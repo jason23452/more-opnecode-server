@@ -10,6 +10,6 @@ REPOSITORY="${DEPLOY_REPOSITORY:-/home/bojii/more-opencode-server}"
 cd "${REPOSITORY}"
 git fetch --no-tags origin "refs/tags/${DEPLOY_TAG}:refs/tags/${DEPLOY_TAG}"
 git checkout --force --detach "refs/tags/${DEPLOY_TAG}"
-cp docker-compose.yaml.prod docker-compose.yaml
-docker compose build
-docker compose up -d
+cp docker-compose.prod.yaml docker-compose.yaml
+docker compose pull
+docker compose up -d --remove-orphans
