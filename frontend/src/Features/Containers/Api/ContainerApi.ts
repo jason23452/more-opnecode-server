@@ -38,6 +38,7 @@ export const containerApi = {
   }),
   create: (token: string) => api.post<CreatedContainer>('/opencode/containers', undefined, {
     headers: { Authorization: `Bearer ${token}` },
+    timeout: 0,
   }),
   getCommands: (containerId: string, environment: CommandEnvironment, token: string) =>
     api.get<ContainerCommands>(`/opencode/containers/${encodeURIComponent(containerId)}`, {

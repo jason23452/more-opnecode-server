@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { http, HttpResponse } from 'msw'
 import { setupServer } from 'msw/node'
 import { MainApp } from '@/App/MainApp'
+import { apiClient } from '@/Shared/Api/ApiClient'
 
 const server = setupServer()
 
@@ -12,6 +13,8 @@ beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
 afterEach(() => {
   cleanup()
   server.resetHandlers()
+  vi.restoreAllMocks()
+  apiClient.defaults.timeout = 15_000
   window.localStorage.clear()
   window.sessionStorage.clear()
   window.history.replaceState({}, '', '/')
@@ -290,6 +293,8 @@ describe('容器管理 Dashboard', () => {
 
   it('建立容器時使用 Bearer token，顯示完整回應並更新容器清單', async () => {
     window.history.replaceState({}, '', '/containers/create')
+    apiClient.defaults.timeout = 1
+    const apiRequestSpy = vi.spyOn(apiClient, 'request')
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => undefined } })
     let created = false
     let createCalls = 0
@@ -320,6 +325,11 @@ describe('容器管理 Dashboard', () => {
     render(<MainApp />)
     await userEvent.type(screen.getByLabelText('管理 token'), 'create-token')
     await userEvent.click(screen.getByRole('button', { name: '建立 OpenCode 容器' }))
+    expect(apiRequestSpy).toHaveBeenCalledWith(expect.objectContaining({
+      method: 'post',
+      url: '/opencode/containers',
+      timeout: 0,
+    }))
     expect(await screen.findByRole('status')).toHaveTextContent('正在建立容器')
     expect(screen.getByRole('button', { name: '建立中…' })).toBeDisabled()
     expect(await screen.findByText(/容器識別碼：new-container/)).toBeInTheDocument()

@@ -14,5 +14,6 @@
 - [x] 正式 Compose 不將 OpenCode 容器或 Cloudflare Quick Tunnel 定義為固定的應用服務。
 - [x] 前端 host port 綁定 `0.0.0.0:3000`，API 後端只在 Compose 內部網路提供服務、不映射 host port。
 - [x] 管理 API 透過公開前端入口可達，管理端點仍要求 `OPENCODE_ADMIN_TOKEN`。
+- [x] 前端建立容器請求不受一般 15 秒 API timeout 截斷（該請求 timeout 為 0）；Nginx `/api/` proxy read timeout 為 600 秒，可等待 image build/容器初始化回應。
 
-**Validation:** Windows Docker Compose build/up 驗證前端 `0.0.0.0:3000` 可達、`/api/health` 經 frontend Nginx 回傳 200，且未帶 Bearer token 的管理端點回傳 401；backend 僅在 Compose network 暴露 `8000/tcp`，沒有 host port mapping。backend container 內 `docker buildx version` 成功，並以 `docker build` 實際建立 OpenCode image。
+**Validation:** 前端 ContainerDashboard 測試 13 passed，涵蓋 Axios 一般 timeout 設為 1ms 時建立 API 仍使用 timeout 0 並完成 delayed response；Windows Docker Compose build/up 驗證前端 Nginx 設定及 API health routing。另已驗證 backend container 內 `docker buildx version` 與實際 OpenCode image build。
