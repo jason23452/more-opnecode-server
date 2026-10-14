@@ -48,6 +48,7 @@ class ProductionDeploymentTests(unittest.TestCase):
         docker.chmod(0o755)
         self.env = os.environ | {
             "DEPLOY_REPOSITORY": str(self.checkout),
+            "DEPLOY_REMOTE": str(self.remote),
             "DEPLOY_TAG": "v1.2.3",
             "OPENCODE_PASSWORD": "throwaway-password",
             "OPENCODE_ADMIN_TOKEN": "throwaway-token",
@@ -59,7 +60,7 @@ class ProductionDeploymentTests(unittest.TestCase):
         self.temp.cleanup()
 
     def deploy(self, **updates):
-        return run([str(self.checkout / "scripts/deploy-production.sh")], cwd=self.root, env=self.env | updates)
+        return run(["bash", str(self.checkout / "scripts/deploy-production.sh")], cwd=self.root, env=self.env | updates)
 
     def test_checks_out_tag_copies_compose_preserves_host_settings_and_runs_compose(self):
         result = self.deploy()
@@ -74,6 +75,19 @@ class ProductionDeploymentTests(unittest.TestCase):
         result = self.deploy(DOCKER_EXIT="47")
 
         self.assertEqual(result.returncode, 47)
+
+    def test_initializes_empty_deployment_directory_and_preserves_local_settings(self):
+        deployment = self.root / "new-deployment"
+        deployment.mkdir()
+        (deployment / ".env").write_text("host-local-setting=preserve\n")
+
+        result = self.deploy(DEPLOY_REPOSITORY=str(deployment))
+
+        self.assertEqual(result.returncode, 0, f"stdout={result.stdout}\nstderr={result.stderr}")
+        self.assertEqual(run(["git", "describe", "--tags", "--exact-match"], cwd=deployment).stdout.strip(), "v1.2.3")
+        self.assertEqual((deployment / "docker-compose.yaml").read_text(), "tagged production compose\n")
+        self.assertEqual((deployment / ".env").read_text(), "host-local-setting=preserve\n")
+        self.assertEqual(self.docker_log.read_text().splitlines(), ["compose pull", "compose up -d --remove-orphans"])
 
 
 if __name__ == "__main__":
