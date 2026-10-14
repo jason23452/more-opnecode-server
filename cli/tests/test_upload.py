@@ -155,6 +155,31 @@ class UploadTests(unittest.TestCase):
             finally:
                 archive.unlink()
 
+    def test_archive_preserves_git_history_without_remote_credentials(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=Test", "-c",
+                            "user.email=test@example.com", "commit", "--allow-empty", "-qm", "initial"], check=True)
+            subprocess.run(["git", "-C", str(root), "remote", "add", "origin",
+                            "https://alice:secret-token@example.com/team/project.git"], check=True)
+            (root / ".git" / "credentials").write_text("https://alice:secret-token@example.com\n")
+            (root / "main.py").write_text("print('hello')")
+
+            archive = create_archive(root)
+            try:
+                with zipfile.ZipFile(archive) as project:
+                    names = project.namelist()
+                    self.assertTrue(any(name.startswith(".git/objects/") for name in names))
+                    self.assertIn(".git/HEAD", names)
+                    self.assertNotIn(".git/credentials", names)
+                    config = project.read(".git/config").decode()
+                    self.assertIn("https://example.com/team/project.git", config)
+                    self.assertNotIn("alice", config)
+                    self.assertNotIn("secret-token", config)
+            finally:
+                archive.unlink()
+
     def test_upload_retries_failed_transfer_using_same_container_capability(self):
         responses = [OSError("connection interrupted"), 204]
 

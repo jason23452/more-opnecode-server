@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import ssl
 import tempfile
 import time
@@ -16,9 +17,10 @@ from urllib.request import Request, urlopen
 from .tls import create_ssl_context
 
 EXCLUDED_DIRECTORIES = {
-    ".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__",
+    ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__",
     ".next", ".nuxt", "dist", "build", "target", "coverage",
 }
+EXCLUDED_GIT_CREDENTIAL_FILES = {".git/credentials", ".git-credentials"}
 MAX_UPLOAD_BYTES = 95 * 1024 * 1024
 CHUNK_BYTES = 8 * 1024 * 1024
 
@@ -49,7 +51,20 @@ def create_archive(project: Path) -> Path:
                 path = current_path / name
                 if path.is_symlink() or not path.is_file():
                     continue
-                archive.write(path, path.relative_to(root).as_posix())
+                relative = path.relative_to(root).as_posix()
+                if relative in EXCLUDED_GIT_CREDENTIAL_FILES:
+                    continue
+                if relative == ".git/config":
+                    contents = path.read_bytes()
+                    contents = re.sub(
+                        rb"(https?://|ssh://)[^/@\s]+@",
+                        rb"\1",
+                        contents,
+                        flags=re.IGNORECASE,
+                    )
+                    archive.writestr(relative, contents)
+                else:
+                    archive.write(path, relative)
     return output_path
 
 

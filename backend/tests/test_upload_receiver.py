@@ -1,4 +1,5 @@
 import io
+import subprocess
 import zipfile
 from pathlib import Path
 import pytest
@@ -22,6 +23,36 @@ def test_receiver_replaces_project_only_after_safe_archive_is_installed(tmp_path
 
     assert (target / "new.txt").read_text() == "new project"
     assert not (target / "previous.txt").exists()
+
+
+def test_receiver_installs_git_history_and_sanitized_remote(tmp_path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", str(source)], check=True)
+    subprocess.run(["git", "-C", str(source), "-c", "user.name=Test", "-c",
+                    "user.email=test@example.com", "commit", "--allow-empty", "-qm", "initial"], check=True)
+    subprocess.run(["git", "-C", str(source), "remote", "add", "origin",
+                    "https://alice:secret-token@example.com/team/project.git"], check=True)
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        for path in source.rglob("*"):
+            if path.is_file():
+                relative = path.relative_to(source).as_posix()
+                content = path.read_bytes()
+                if relative == ".git/config":
+                    content = content.replace(b"https://alice:secret-token@", b"https://")
+                archive.writestr(relative, content)
+    target = tmp_path / "project"
+
+    install_archive(output.getvalue(), target)
+
+    log = subprocess.run(["git", "-C", str(target), "log", "-1", "--format=%s"],
+                         check=True, capture_output=True, text=True)
+    remote = subprocess.run(["git", "-C", str(target), "remote", "get-url", "origin"],
+                            check=True, capture_output=True, text=True)
+    assert log.stdout.strip() == "initial"
+    assert remote.stdout.strip() == "https://example.com/team/project.git"
+    assert "secret-token" not in (target / ".git/config").read_text()
 
 
 def test_failed_atomic_exchange_keeps_existing_workspace(tmp_path, monkeypatch) -> None:
