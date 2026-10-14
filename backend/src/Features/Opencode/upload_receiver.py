@@ -232,7 +232,7 @@ def install_git_ssh_credentials(remote: str, credentials: dict[str, str], projec
         parsed = urlsplit(value)
         if parsed.scheme == "ssh" and parsed.hostname:
             return "ssh", parsed.username or "git", parsed.hostname.lower(), parsed.path.lstrip("/").rstrip("/")
-        match = re.fullmatch(r"(?:(?P<user>[^@/:]+)@)?(?P<host>[^/:]+):(?P<path>.+)", value)
+        match = re.fullmatch(r"(?:(?P<user>[^@/:]+)(?::[^@/:]+)?@)?(?P<host>[^/:]+):(?P<path>.+)", value)
         if match:
             return "ssh", match.group("user") or "git", match.group("host").lower(), match.group("path").rstrip("/")
         raise ValueError("Invalid SSH remote")
@@ -264,8 +264,7 @@ def install_git_ssh_credentials(remote: str, credentials: dict[str, str], projec
         "if destination != expected_user+'@'+expected_host or len(words)!=2 or words[0] not in ('git-receive-pack','git-upload-pack') or words[1].strip(\"'\\\"\") != expected_path: sys.exit(126)\n" +
         "os.execvp('ssh', ['ssh','-i',key,'-o','IdentitiesOnly=yes','-o','StrictHostKeyChecking=accept-new',*args])\n")
     wrapper.chmod(0o700)
-    Path(os.environ.get("HOME", str(Path.home()))).mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "config", "--global", "core.sshCommand", str(wrapper)], check=True,
+    subprocess.run(["git", "-C", str(project), "config", "core.sshCommand", str(wrapper)], check=True,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 

@@ -40,7 +40,9 @@ opencode-project upload --url "<upload_url>" --token "<upload_token>" --project 
 
 CLI 的上傳請求只送往指定容器的 Tunnel，不會連線至管理 API。若 Tunnel URL 過期或發生網路錯誤，請由管理者透過受保護的列表/單筆管理 API 重新取得目前 `upload_url`，並使用建立容器時的原 upload token 重跑命令；重試可建立新的上傳工作階段並重新傳送檔案/區塊。CLI 不提供 `--refresh-url`。
 
-未指定 `--project` 時使用目前目錄。CLI 預設略過 `.git`、`node_modules`、虛擬環境、編譯產物與常見快取目錄；失敗時會自動重試三次，再次執行相同指令即可重傳。成功後檔案位於該容器的 `/workspace/project`。上傳授權資訊只適用於建立回應中的目標容器，請勿公開分享。
+未指定 `--project` 時使用目前目錄。CLI 會保留 `.git` 歷史與 remote（移除 remote URL 內的密碼），並略過 `node_modules`、虛擬環境、編譯產物與常見快取目錄；失敗時會自動重試三次，再次執行相同指令即可重傳。成功後檔案位於該容器的 `/workspace/project`。上傳授權資訊只適用於建立回應中的目標容器，請勿公開分享。
+
+SSH 認證目前支援可讀取的未加密私鑰，並僅套用至該專案；需要即時 SSH agent 轉送的 agent 身分及加密私鑰會明確標示尚未支援，不會被當成可用認證。HTTPS remote 內的 userinfo 及 SSH URL 中的密碼會在封裝或確認提示中移除；SCP-style SSH remote 則保留 SSH 使用者、主機與路徑。
 
 CLI 使用隨執行檔打包的公開 CA 憑證驗證 HTTPS 上傳與 WSS 遠端 TUI 連線。若網路使用公司代理或自訂 CA，請先將 `SSL_CERT_FILE` 設為 PEM 格式的受信任 CA 憑證檔，再執行上傳或連線命令。
 

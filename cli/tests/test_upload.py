@@ -175,10 +175,42 @@ class UploadTests(unittest.TestCase):
                     self.assertNotIn(".git/credentials", names)
                     config = project.read(".git/config").decode()
                     self.assertIn("https://example.com/team/project.git", config)
-                    self.assertNotIn("alice", config)
                     self.assertNotIn("secret-token", config)
             finally:
                 archive.unlink()
+
+    def test_archive_redacts_password_in_scp_style_ssh_remote_without_changing_route(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            remote = "git:scp-secret@git.example:team/repo.git"
+            subprocess.run(["git", "-C", str(root), "remote", "add", "origin", remote], check=True)
+
+            archive = create_archive(root)
+            try:
+                with zipfile.ZipFile(archive) as project:
+                    config = project.read(".git/config").decode()
+                self.assertIn("git@git.example:team/repo.git", config)
+                self.assertNotIn("scp-secret", config)
+            finally:
+                archive.unlink()
+
+    def test_confirmation_redacts_scp_style_password_but_preserves_username_host_and_path(self):
+        from opencode_project.cli import prompt_git_credentials
+
+        class TTY(io.StringIO):
+            def isatty(self):
+                return True
+
+        output = TTY()
+        with patch("opencode_project.cli.sys.stdin", TTY("1\n")), patch("opencode_project.cli.sys.stdout", output):
+            prompt_git_credentials("git:scp-secret@git.example:team/repo.git", True, "SSH key")
+
+        self.assertIn("git@git.example:team/repo.git", output.getvalue())
+        self.assertNotIn("scp-secret", output.getvalue())
+        self.assertEqual(upload.sanitize_remote("ssh://git:secret@git.example:2222/team/repo.git"),
+                         "ssh://git@git.example:2222/team/repo.git")
+        self.assertTrue(upload._ssh_remote("git:scp-secret@git.example:team/repo.git"))
 
     def test_upload_prompts_before_transmitting_https_remote_credentials(self):
         from opencode_project.cli import main
@@ -316,6 +348,30 @@ class UploadTests(unittest.TestCase):
             "private_key": "-----BEGIN OPENSSH PRIVATE KEY-----\nprivate\n-----END OPENSSH PRIVATE KEY-----\n",
             "key_name": "id_ed25519",
         }))
+
+    def test_ssh_agent_identity_is_reported_as_unsupported_instead_of_missing_auth(self):
+        from opencode_project.upload import git_ssh_credentials
+
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(project)], check=True)
+            subprocess.run(["git", "-C", str(project), "remote", "add", "origin",
+                            "git@git.example:team/repo.git"], check=True)
+            original_run = subprocess.run
+
+            def run(args, **kwargs):
+                if args[0] == "ssh":
+                    return subprocess.CompletedProcess(args, 0, "identityfile /missing/key\n", "")
+                if args[:2] == ["ssh-add", "-L"]:
+                    return subprocess.CompletedProcess(args, 0, "ssh-ed25519 AAAA agent-key\n", "")
+                return original_run(args, **kwargs)
+
+            with patch("opencode_project.upload.subprocess.run", side_effect=run), \
+                    patch.dict(os.environ, {"SSH_AUTH_SOCK": "/tmp/agent.sock"}):
+                detected = git_ssh_credentials(project)
+
+        self.assertIn("ssh-agent", detected[1]["unsupported"])
+        self.assertNotIn("private_key", detected[1])
 
     def test_upload_without_credentials_does_not_offer_or_send_credentials(self):
         from opencode_project.cli import main

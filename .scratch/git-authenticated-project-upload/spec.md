@@ -63,4 +63,4 @@ Git 認證憑證由容器在其工作期間持有，並在容器移除時清除�
 
 - Tunnel token 用於授權對容器 Tunnel 的存取，HTTPS/TLS 負責傳輸加密；兩者用途不同。Git 認證送達容器後，容器內可執行的程序可在容器工作期間使用該認證。
 - 本機 credential helper 提供的憑證權限與效期由該 helper 及遠端 Git 服務決定；本功能不承諾將長效憑證自動轉換為短效或 repo-scoped token。
-- 現行程式會排除整個 `.git`，且 upload receiver 會將專案封裝安裝至工作目錄；實作需更新兩端對 Git metadata 與獨立認證資料的處理。
+- 專案封裝包含 `.git` 歷史，並在封裝時移除 remote URL 內的認證 userinfo；容器端將獨立認證資料套用至專案工作目錄外的短期位置。SSH agent 即時轉送與加密私鑰目前不支援，CLI 必須明確提示此限制。
