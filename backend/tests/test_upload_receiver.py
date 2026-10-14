@@ -1,7 +1,9 @@
 import io
+import base64
+import os
 import subprocess
 import threading
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 import zipfile
@@ -88,6 +90,96 @@ def test_receiver_installs_authorized_git_credentials_outside_project_config(tmp
                                input="protocol=https\nhost=git.example\npath=team/other.git\n\n",
                                capture_output=True, text=True)
     assert "password=secret" not in unrelated.stdout
+
+
+def test_receiver_credentials_authorize_a_real_https_git_push(tmp_path, monkeypatch) -> None:
+    bare = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(bare)], check=True)
+    username, password = "push-user", "push-secret"
+
+    class GitHttpHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self._run_backend()
+
+        def do_POST(self):
+            self._run_backend()
+
+        def _run_backend(self):
+            authorization = "Basic " + base64.b64encode(f"{username}:{password}".encode()).decode()
+            if self.headers.get("Authorization") != authorization:
+                self.send_response(401)
+                self.send_header("WWW-Authenticate", 'Basic realm="test-git"')
+                self.end_headers()
+                return
+            relative_path = self.path.split("/remote.git", 1)[-1].split("?", 1)[0]
+            environment = os.environ | {
+                "GIT_PROJECT_ROOT": str(tmp_path), "GIT_HTTP_EXPORT_ALL": "1",
+                "PATH_INFO": "/remote.git" + relative_path,
+                "QUERY_STRING": self.path.partition("?")[2], "REQUEST_METHOD": self.command,
+                "CONTENT_TYPE": self.headers.get("Content-Type", ""),
+                "CONTENT_LENGTH": self.headers.get("Content-Length", "0"),
+                "REMOTE_USER": username, "REMOTE_ADDR": "127.0.0.1",
+            }
+            body = self.rfile.read(int(environment["CONTENT_LENGTH"])) if self.command == "POST" else b""
+            result = subprocess.run(["git", "http-backend"], input=body, env=environment,
+                                    capture_output=True, check=True)
+            headers, _, response_body = result.stdout.partition(b"\r\n\r\n")
+            self.send_response(200)
+            for line in headers.split(b"\r\n"):
+                if b":" in line:
+                    name, value = line.split(b":", 1)
+                    if name.lower() not in {b"status", b"content-length", b"transfer-encoding"}:
+                        self.send_header(name.decode(), value.strip().decode())
+            self.send_header("Content-Length", str(len(response_body)))
+            self.end_headers()
+            self.wfile.write(response_body)
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), GitHttpHandler)
+    tls_directory = tmp_path / "tls"
+    tls_directory.mkdir()
+    certificate, key = tls_directory / "server.pem", tls_directory / "server-key.pem"
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(key),
+                    "-out", str(certificate), "-days", "1", "-subj", "/CN=localhost"],
+                   check=True, capture_output=True)
+    import ssl
+    tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tls.load_cert_chain(certificate, key)
+    server.socket = tls.wrap_socket(server.socket, server_side=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        remote = f"https://localhost:{server.server_port}/remote.git"
+        project = tmp_path / "project"
+        project.mkdir()
+        subprocess.run(["git", "init", "-q", str(project)], check=True)
+        subprocess.run(["git", "-C", str(project), "remote", "add", "origin", remote], check=True)
+        (project / "change.txt").write_text("authenticated push\n")
+        subprocess.run(["git", "-C", str(project), "-c", "user.name=Test", "-c",
+                        "user.email=test@example.com", "add", "change.txt"], check=True)
+        subprocess.run(["git", "-C", str(project), "-c", "user.name=Test", "-c",
+                        "user.email=test@example.com", "commit", "-qm", "initial"], check=True)
+        monkeypatch.setenv("OPENCODE_GIT_CREDENTIAL_PATH", str(tmp_path / "runtime" / "credentials"))
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "global-gitconfig"))
+        monkeypatch.setenv("GIT_SSL_NO_VERIFY", "true")
+        import src.Features.Opencode.upload_receiver as receiver
+        receiver.install_git_credentials(remote, {"username": username, "password": password}, project)
+        subprocess.run(["git", "-C", str(project), "push", "origin", "HEAD:main"],
+                       check=True, capture_output=True, text=True, timeout=20)
+        pushed = subprocess.run(["git", "--git-dir", str(bare), "rev-parse", "main"],
+                                check=True, capture_output=True, text=True).stdout.strip()
+        local = subprocess.run(["git", "-C", str(project), "rev-parse", "HEAD"],
+                               check=True, capture_output=True, text=True).stdout.strip()
+        assert pushed == local
+        assert password not in (project / ".git" / "config").read_text()
+        assert (tmp_path / "runtime" / "credentials").exists()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 def test_receiver_rejects_credentials_for_remote_not_in_project(tmp_path) -> None:

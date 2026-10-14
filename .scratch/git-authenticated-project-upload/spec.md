@@ -34,7 +34,7 @@ Git 認證憑證由容器在其工作期間持有，並在容器移除時清除�
 ## Implementation Decisions
 
 - Git 專案歷史是專案上傳內容的一部分；CLI 不再一律排除 `.git`。仍排除大型依賴、建置產物與快取目錄。
-- CLI 偵測 Git remote 使用 HTTPS 或 SSH，並沿用本機 Git 已配置的認證來源；HTTPS 認證透過 Git credential helper 取得，不自行解析 Git Credential Manager、GitHub CLI 等工具的內部儲存格式；SSH 僅使用目前 `SSH_AUTH_SOCK` 中已載入的身分，不讀取或匯出私鑰檔案。
+- CLI 偵測 Git remote 使用 HTTPS 或 SSH，並沿用本機 Git 已配置的認證來源；HTTPS 認證透過 Git credential helper 取得，不自行解析 Git Credential Manager、GitHub CLI 等工具的內部儲存格式；SSH 僅使用目前可用 OpenSSH agent endpoint（POSIX `SSH_AUTH_SOCK` 或 Windows OpenSSH named pipe）中已載入的身分，不讀取或匯出私鑰檔案。
 - 傳送任何 Git 認證前，CLI 必須在終端顯示遮蔽敏感資訊的 remote 與認證類型，並提供「傳送認證並上傳」、「只上傳專案（不帶認證）」及「取消」選項。非互動式終端不得默認傳送認證。
 - HTTPS 認證與專案封裝分開傳送至目標容器，使用容器專屬 Tunnel URL 與 upload token，且傳輸需使用 HTTPS/TLS。SSH 上傳只傳送 SSH remote 綁定資訊，不傳送私鑰或 agent identity 私密材料。
 - 容器端將 HTTPS 認證關聯至上傳專案的 HTTPS remote；SSH remote 使用容器端嚴格限制目的地與 Git 命令的 wrapper，並只在 CLI TUI 工作階段存活期間提供暫時 agent socket。
@@ -45,10 +45,10 @@ Git 認證憑證由容器在其工作期間持有，並在容器移除時清除�
 
 ## Testing Decisions
 
-- 測試以外部可觀察行為為主：上傳後遠端保有 Git 歷史；HTTPS 可推送；SSH 只在已連線且本機 agent 可用時能對設定 remote 推送；私鑰不出現在專案封裝、Tunnel payload 或容器檔案；disconnect 後 relay socket 清除。
+- 測試以外部可觀察行為為主：上傳後遠端保有 Git 歷史；HTTPS 可實際推送；SSH 只在已連線且本機 agent 可用時能對設定 remote 推送，且 disconnect 後再次 push 不得成功；私鑰不出現在專案封裝、Tunnel payload 或容器檔案；disconnect 後 relay socket 清除；HTTPS 認證在容器移除時隨容器工作資料一併消失。
 - CLI 測試涵蓋 upload 整體流程，包括辨識 HTTPS/SSH Git remote、由相應本機認證來源取得認證、提示選項及各選項的結果、認證與專案分離傳輸、一般非 Git 資料夾相容性，以及認證不可取得時仍可只上傳專案或取消。
 - 容器測試涵蓋 HTTPS 認證授權、remote 關聯及清除；SSH 測試涵蓋真實 agent protocol 簽章請求、local bare remote push、未授權 remote 拒絕，以及 disconnect 清理。
-- 使用既有 CLI upload 測試與後端 upload receiver 測試作為測試先例；優先沿用現有 HTTP/Tunnel 與臨時檔案測試方式，不以單元測試驗證私有實作細節。
+- 使用既有 CLI upload 測試與後端 upload receiver 測試作為測試先例；優先沿用現有 HTTP/Tunnel 與臨時檔案測試方式，不以單元測試驗證私有實作細節。SSH agent 封包允許清單在 CLI 與容器 relay 兩端獨立驗證，因為兩者是不同程序與信任邊界：CLI 保護本機 agent，容器 relay 保護遠端 relay；任何一端不得假設另一端一定執行驗證。
 - 驗證範圍包含小型與分塊專案上傳，確認兩種傳輸模式都不會遺漏或混入認證 payload。
 
 ## Out of Scope

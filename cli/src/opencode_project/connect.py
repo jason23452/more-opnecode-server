@@ -50,6 +50,8 @@ def _valid_agent_packet(packet: bytes) -> bool:
 
 
 def _allowed_agent_request(packet: bytes) -> bool:
+    # This client-side validation protects the local agent; the container
+    # relay repeats it independently at its own receiving trust boundary.
     if not _valid_agent_packet(packet):
         return False
     if packet[4] in {11, 13}:  # Request identities / sign request.

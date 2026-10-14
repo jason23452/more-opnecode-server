@@ -56,6 +56,8 @@ def _valid_packet(packet: bytes) -> bool:
 
 
 def agent_request_allowed(packet: bytes) -> bool:
+    # Validate at the receiving trust boundary too; the CLI independently
+    # validates local-agent traffic before forwarding it through this relay.
     if not _valid_packet(packet):
         return False
     request_type = packet[4]

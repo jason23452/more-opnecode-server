@@ -188,6 +188,10 @@ def test_local_encrypted_agent_signs_remote_scoped_git_push_and_disconnect_clean
                                   check=True, capture_output=True, text=True).stdout.strip() == subprocess.run(
                                       ["git", "-C", str(project), "rev-parse", "HEAD"],
                                       check=True, capture_output=True, text=True).stdout.strip()
+            pushed_revision = subprocess.run(
+                ["git", "--git-dir", str(bare), "rev-parse", "main"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
 
             denied = subprocess.run(
                 [str(root / "ssh" / "git-ssh"), "attacker@git.example", "git-receive-pack 'team/repo.git'"],
@@ -199,6 +203,18 @@ def test_local_encrypted_agent_signs_remote_scoped_git_push_and_disconnect_clean
             client_thread.join(timeout=3)
             assert not client_thread.is_alive()
             assert _wait_for(lambda: not forwarded_socket.exists())
+            (project / "change.txt").write_text("new commit after relay disconnect\n")
+            subprocess.run(["git", "-C", str(project), "-c", "user.name=Test", "-c",
+                            "user.email=test@example.com", "add", "change.txt"], check=True)
+            subprocess.run(["git", "-C", str(project), "-c", "user.name=Test", "-c",
+                            "user.email=test@example.com", "commit", "-qm", "after disconnect"], check=True)
+            disconnected_push = subprocess.run(
+                ["git", "-C", str(project), "push", "origin", "HEAD:main"],
+                env=push_env, capture_output=True, text=True, timeout=10,
+            )
+            assert disconnected_push.returncode != 0
+            assert subprocess.run(["git", "--git-dir", str(bare), "rev-parse", "main"],
+                                  check=True, capture_output=True, text=True).stdout.strip() == pushed_revision
             marker.unlink()
         finally:
             stop.set()

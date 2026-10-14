@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 import contextlib
+from enum import Enum
 from pathlib import Path
 
 from opencode_project.connect import connect_terminal
@@ -12,14 +13,20 @@ from opencode_project.upload import (
 )
 
 
-def prompt_git_credentials(
+class GitCredentialPromptChoice(str, Enum):
+    SEND = "send"
+    PROCEED_WITHOUT_CREDENTIALS = "proceed_without_credentials"
+    CANCEL = "cancel"
+
+
+def prompt_git_credential_transfer(
     remote: str,
     credentials_available: bool,
     auth_type: str = "HTTPS Git credential helper",
     purpose: str = "upload",
-) -> str:
+) -> GitCredentialPromptChoice:
     if not sys.stdin.isatty() or not sys.stdout.isatty():
-        return "upload"
+        return GitCredentialPromptChoice.PROCEED_WITHOUT_CREDENTIALS
     safe_remote = sanitize_remote(remote)
     print(f"偵測到 {auth_type.split(':', 1)[0]} Git remote：{safe_remote}")
     if purpose == "connect":
@@ -30,7 +37,11 @@ def prompt_git_credentials(
             print("本機無法取得此 remote 的 SSH agent 認證。")
             print("[2] 只連線（不轉送）  [3] 取消")
         choice = input("請選擇 [1/2/3]：").strip()
-        return {"1": "send", "2": "upload", "3": "cancel"}.get(choice, "cancel")
+        return {
+            "1": GitCredentialPromptChoice.SEND,
+            "2": GitCredentialPromptChoice.PROCEED_WITHOUT_CREDENTIALS,
+            "3": GitCredentialPromptChoice.CANCEL,
+        }.get(choice, GitCredentialPromptChoice.CANCEL)
     if credentials_available:
         print(f"本機 {auth_type} 已提供認證（秘密內容已遮蔽）。")
         print("[1] 傳送認證並上傳  [2] 只上傳專案（不帶認證）  [3] 取消")
@@ -38,7 +49,11 @@ def prompt_git_credentials(
         print(f"本機無法取得此 remote 的 {auth_type} 認證。")
         print("[2] 只上傳專案（不帶認證）  [3] 取消")
     choice = input("請選擇 [1/2/3]：").strip()
-    return {"1": "send", "2": "upload", "3": "cancel"}.get(choice, "cancel")
+    return {
+        "1": GitCredentialPromptChoice.SEND,
+        "2": GitCredentialPromptChoice.PROCEED_WITHOUT_CREDENTIALS,
+        "3": GitCredentialPromptChoice.CANCEL,
+    }.get(choice, GitCredentialPromptChoice.CANCEL)
 
 
 def _configure_console_encoding() -> None:
@@ -71,7 +86,7 @@ def main() -> None:
             forward_agent = False
             if ssh_auth:
                 credentials_available = bool(ssh_auth[1].get("agent_forwarding"))
-                decision = prompt_git_credentials(
+                decision = prompt_git_credential_transfer(
                     ssh_auth[0], credentials_available, "SSH agent forwarding", purpose="connect",
                 )
                 if decision == "cancel":
@@ -91,9 +106,9 @@ def main() -> None:
         if git_auth:
             remote, credentials = git_auth
             credentials_available = bool(credentials) and "unsupported" not in credentials
-            decision = (prompt_git_credentials(remote, credentials_available)
+            decision = (prompt_git_credential_transfer(remote, credentials_available)
                         if auth_type == "HTTPS Git credential helper"
-                        else prompt_git_credentials(remote, credentials_available, auth_type))
+                        else prompt_git_credential_transfer(remote, credentials_available, auth_type))
             if decision == "cancel":
                 print("已取消上傳。")
                 return
