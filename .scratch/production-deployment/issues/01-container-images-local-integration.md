@@ -4,11 +4,13 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] 前端與 API 後端皆可建置為 production 容器映像，並以容器啟動正式應用程式。
-- [ ] 本機整合驗證可使用一個 Compose 操作建置並啟動前端與 API 後端，不需啟動 OpenCode 容器或 Cloudflare Quick Tunnel。
-- [ ] 驗證可透過 HTTP 確認前端服務入口回應，並確認 API `/api/health` 健康端點可達。
-- [ ] 驗證完成或失敗時都會停止並清理本次建立的服務。
-- [ ] 本機整合驗證可重複執行，且不依賴正式環境機密。
-- [ ] 前端容器保留 runtime config 能力，讓 API base URL 可由啟動時設定。
+- [x] 前端與 API 後端皆可建置為 production 容器映像，並以容器啟動正式應用程式。
+- [x] 本機整合驗證可使用一個 Compose 操作建置並啟動前端與 API 後端，不需啟動 OpenCode 容器或 Cloudflare Quick Tunnel。
+- [x] 驗證可透過 HTTP 確認前端服務入口回應，並確認 API `/api/health` 健康端點可達。
+- [x] 驗證完成或失敗時都會停止並清理本次建立的服務。
+- [x] 本機整合驗證可重複執行，且不依賴正式環境機密。
+- [x] 前端容器保留 runtime config 能力，讓 API base URL 可由啟動時設定。
+
+**Validation:** 後端 pytest 69 passed、3 skipped；前端 production build 通過；本機與正式 Compose 均完成 config、build、up、HTTP smoke test 與清理；部署腳本行為測試 2 passed。
