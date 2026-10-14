@@ -42,7 +42,7 @@ CLI 的上傳請求只送往指定容器的 Tunnel，不會連線至管理 API�
 
 未指定 `--project` 時使用目前目錄。CLI 預設略過 `.git`、`node_modules`、虛擬環境、編譯產物與常見快取目錄；失敗時會自動重試三次，再次執行相同指令即可重傳。成功後檔案位於該容器的 `/workspace/project`。上傳授權資訊只適用於建立回應中的目標容器，請勿公開分享。
 
-CLI 使用隨執行檔打包的公開 CA 憑證驗證 HTTPS Tunnel。若網路使用公司代理或自訂 CA，請先將 `SSL_CERT_FILE` 設為 PEM 格式的受信任 CA 憑證檔，再執行上傳命令。
+CLI 使用隨執行檔打包的公開 CA 憑證驗證 HTTPS 上傳與 WSS 遠端 TUI 連線。若網路使用公司代理或自訂 CA，請先將 `SSL_CERT_FILE` 設為 PEM 格式的受信任 CA 憑證檔，再執行上傳或連線命令。
 
 ## 連入遠端 TUI
 

@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 import certifi
 import trustme
+from websockets.sync.server import serve
 
 import opencode_project.upload as upload
 from opencode_project.upload import create_archive, upload_archive
@@ -71,6 +72,61 @@ class UploadTests(unittest.TestCase):
 
         self.assertIn("SSL_CERT_FILE", message)
         self.assertNotIn("重新查詢目前的 upload_url", message)
+
+    def test_tui_connection_uses_packaged_trusted_certificate_bundle(self):
+        import opencode_project.connect as connect
+
+        received = []
+
+        def handle_connection(websocket):
+            try:
+                while True:
+                    received.append(websocket.recv(timeout=2))
+            except Exception:
+                return
+
+        ca = trustme.CA()
+        server_certificate = ca.issue_cert("localhost", "127.0.0.1")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            certificate_path = root / "server.pem"
+            key_path = root / "server-key.pem"
+            ca_path = root / "trusted-ca.pem"
+            server_certificate.cert_chain_pems[0].write_to_path(certificate_path)
+            server_certificate.private_key_pem.write_to_path(key_path)
+            ca.cert_pem.write_to_path(ca_path)
+
+            server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            server_context.load_cert_chain(certificate_path, key_path)
+            server = serve(handle_connection, "127.0.0.1", 0, ssl=server_context)
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+            try:
+                with patch.object(certifi, "where", return_value=str(ca_path)), \
+                        patch.dict(os.environ, {"SSL_CERT_FILE": ""}), \
+                        patch.object(connect, "terminal_size", return_value=(80, 24)), \
+                        patch.object(connect, "_terminal_input", return_value=b"\x03"):
+                    connect.connect_terminal(
+                        f"wss://127.0.0.1:{server.socket.getsockname()[1]}/connect",
+                        "connect-capability",
+                    )
+            finally:
+                server.shutdown()
+                server_thread.join(timeout=2)
+
+        self.assertEqual(received, ['{"type":"resize","columns":80,"rows":24}', b"\x03"])
+
+    def test_tui_certificate_verification_failure_explains_custom_ca_override(self):
+        import opencode_project.connect as connect
+
+        with patch.object(
+            connect, "websocket_connect",
+            side_effect=ssl.SSLCertVerificationError(1, "unable to get local issuer certificate"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "TLS 憑證驗證失敗.*SSL_CERT_FILE") as raised:
+                connect.connect_terminal("wss://tunnel.example/connect", "connect-token")
+
+        self.assertNotIn("重新查詢目前的 connect_url", str(raised.exception))
 
     def test_help_uses_unicode_output_when_system_encoding_cannot_render_chinese(self):
         environment = os.environ | {"PYTHONIOENCODING": "cp1252"}

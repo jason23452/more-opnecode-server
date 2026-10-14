@@ -4,8 +4,10 @@ import json
 import os
 import re
 import select
+import ssl
 import shutil
 import sys
+from urllib.parse import urlsplit
 
 try:
     import termios
@@ -23,6 +25,7 @@ from websockets.sync.client import connect as websocket_connect
 from websockets.exceptions import ConnectionClosed
 
 from .clipboard import read_clipboard_files
+from .tls import create_ssl_context
 
 _CLIPBOARD_FILE_PREFIX = b"\x00OPENCODE_CLIPBOARD_FILE_V1\x00"
 _CLIPBOARD_PASTE_TRIGGERS = {b"\x16", b"\x07"}  # Ctrl+V, Ctrl+G fallback
@@ -128,10 +131,15 @@ def connect_terminal(url: str, token: str) -> None:
         old_settings = termios.tcgetattr(sys.stdin.fileno())
         tty.setraw(sys.stdin.fileno())
     try:
-        with websocket_connect(
-            url, additional_headers={"Authorization": f"Bearer {token}"},
-            max_size=None, ping_interval=20, close_timeout=2,
-        ) as remote:
+        connection_options = {
+            "additional_headers": {"Authorization": f"Bearer {token}"},
+            "max_size": None,
+            "ping_interval": 20,
+            "close_timeout": 2,
+        }
+        if urlsplit(url).scheme == "wss":
+            connection_options["ssl"] = create_ssl_context()
+        with websocket_connect(url, **connection_options) as remote:
             last_size = None
             while True:
                 size = terminal_size()
@@ -165,7 +173,13 @@ def connect_terminal(url: str, token: str) -> None:
             "並使用原容器 connect token 重新執行 connect。"
         ) from error
     except Exception as error:
-        message = _known_close_message_from_error(error) or (
+        message = _known_close_message_from_error(error)
+        if message is None and isinstance(error, ssl.SSLCertVerificationError):
+            message = (
+                f"Tunnel TLS 憑證驗證失敗：{error}。CLI 使用內建公開 CA 憑證；"
+                "若網路使用自訂或公司 TLS 憑證，請將 SSL_CERT_FILE 設為受信任的 CA 憑證檔後重試。"
+            )
+        message = message or (
             "Tunnel 網路連線失敗。請透過管理 API 重新查詢目前的 connect_url，"
             "並使用原容器 connect token 重新執行 connect。"
         )

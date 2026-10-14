@@ -13,7 +13,7 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-import certifi
+from .tls import create_ssl_context
 
 EXCLUDED_DIRECTORIES = {
     ".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__",
@@ -65,9 +65,7 @@ def _send(url: str, token: str, archive: bytes) -> int:
 
 
 def _open_url(request: Request):
-    ca_bundle = os.environ.get("SSL_CERT_FILE") or certifi.where()
-    context = ssl.create_default_context(cafile=ca_bundle)
-    return urlopen(request, timeout=300, context=context)
+    return urlopen(request, timeout=300, context=create_ssl_context())
 
 
 def _request(url: str, token: str, data: bytes | None = None, method: str = "GET", headers: dict[str, str] | None = None) -> bytes:
