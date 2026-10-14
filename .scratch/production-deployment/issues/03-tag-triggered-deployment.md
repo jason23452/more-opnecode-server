@@ -14,4 +14,4 @@
 - [x] Workflow 由 GitHub Secrets 注入正式部署機密，並將後端機密持久化到權限 `0600`、不納入版本控制的部署 `.env`，使主機後續 Compose 命令可解析設定；機密不寫入版本控制或日誌。
 - [x] 任一更新、複製、建置或啟動步驟失敗時，workflow 以失敗狀態結束。
 
-**Validation:** 部署腳本臨時 Git remote/fake Docker 行為測試 3 passed，涵蓋既有與首次初始化的部署目錄、保留其他 `.env` 設定、以 mode `0600` 持久化原始後端 secrets、`compose pull`/`up` 及錯誤傳遞。GitHub Actions `v0.1.5` 完整成功：前後端映像推送至 GHCR，`bojii-system` runner 拉取映像並完成部署。
+**Validation:** 部署腳本臨時 Git remote/fake Docker 行為測試 3 passed，涵蓋既有與首次初始化的部署目錄、保留其他 `.env` 設定、以 mode `0600` 持久化原始後端 secrets、`compose pull`/`up` 及錯誤傳遞。GitHub Actions `v0.1.6` 完整成功：前後端映像推送至 GHCR，`bojii-system` runner 拉取映像並完成部署。
