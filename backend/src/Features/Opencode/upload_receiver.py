@@ -8,6 +8,7 @@ import re
 import shutil
 import stat
 import ctypes
+import subprocess
 import tempfile
 import threading
 import time
@@ -16,6 +17,7 @@ import zipfile
 from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit, urlunsplit
 
 MAX_UPLOAD_BYTES = 95 * 1024 * 1024
 MAX_ENTRIES = 100_000
@@ -187,6 +189,88 @@ def install_archive(data: bytes | Path, target: Path, max_bytes: int = MAX_UPLOA
         raise ValueError("Invalid project archive") from error
 
 
+def install_git_credentials(remote: str, credentials: dict[str, str], project: Path | None = None) -> None:
+    project = project or PROJECT
+    parsed = urlsplit(remote)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError("Git credentials require a clean HTTPS remote")
+    if not credentials.get("username") or not credentials.get("password"):
+        raise ValueError("Git username and password are required")
+    configured = subprocess.run(["git", "-C", str(project), "remote", "get-url", "origin"],
+                                check=True, capture_output=True, text=True).stdout.strip()
+    configured_parts = urlsplit(configured)
+    supplied = urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
+    expected = urlunsplit((configured_parts.scheme, configured_parts.netloc,
+                           configured_parts.path.rstrip("/"), "", ""))
+    if configured_parts.scheme != "https" or supplied.lower() != expected.lower():
+        raise ValueError("Credentials do not match the configured HTTPS remote")
+
+    credential_path = Path(os.environ.get("OPENCODE_GIT_CREDENTIAL_PATH", "/run/opencode/git-credentials"))
+    credential_path.parent.mkdir(parents=True, exist_ok=True)
+    credential_path.parent.chmod(0o700)
+    Path(os.environ.get("HOME", str(Path.home()))).mkdir(parents=True, exist_ok=True)
+    credential_path.touch(mode=0o600, exist_ok=True)
+    credential_path.chmod(0o600)
+    prompt = (f"protocol=https\nhost={parsed.netloc}\npath={parsed.path.lstrip('/')}\n"
+              f"username={credentials['username']}\npassword={credentials['password']}\n\n")
+    subprocess.run(["git", "credential-store", f"--file={credential_path}", "store"],
+                   input=prompt, text=True, check=True, stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL)
+    subprocess.run(["git", "config", "--global", "credential.helper",
+                    f"store --file={credential_path}"], check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["git", "config", "--global", "credential.useHttpPath", "true"],
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    credential_path.chmod(0o600)
+
+
+def install_git_ssh_credentials(remote: str, credentials: dict[str, str], project: Path | None = None) -> None:
+    project = project or PROJECT
+    configured = subprocess.run(["git", "-C", str(project), "remote", "get-url", "origin"],
+                                check=True, capture_output=True, text=True).stdout.strip()
+    def normalized(value: str) -> tuple[str, str, str, int, str]:
+        parsed = urlsplit(value)
+        if parsed.scheme == "ssh" and parsed.hostname:
+            return ("ssh", parsed.username or "git", parsed.hostname.lower(), parsed.port or 22,
+                    parsed.path.lstrip("/").rstrip("/"))
+        match = re.fullmatch(r"(?:(?P<user>[^@/:]+)(?::[^@/:]+)?@)?(?P<host>[^/:]+):(?P<path>.+)", value)
+        if match:
+            return ("ssh", match.group("user") or "git", match.group("host").lower(), 22,
+                    match.group("path").rstrip("/"))
+        raise ValueError("Invalid SSH remote")
+
+    if normalized(remote) != normalized(configured):
+        raise ValueError("Credentials do not match the configured SSH remote")
+    if credentials != {"agent_forwarding": True}:
+        raise ValueError("SSH authentication must use the active local SSH agent")
+
+    credential_dir = Path(os.environ.get("OPENCODE_SSH_CREDENTIAL_DIR", "/run/opencode/ssh"))
+    credential_dir.mkdir(parents=True, exist_ok=True)
+    credential_dir.chmod(0o700)
+    _, user, host, port, path = normalized(remote)
+    socket_path = os.environ.get("OPENCODE_SSH_AGENT_SOCKET", "/run/opencode/ssh-agent.sock")
+    wrapper = credential_dir / "git-ssh"
+    wrapper.write_text("#!/usr/bin/env python3\n" +
+        "import os, shlex, sys\n" +
+        f"expected_user={user!r}; expected_host={host!r}; expected_port={port!r}; expected_path={path!r}; agent_socket={socket_path!r}\n" +
+        "args=sys.argv[1:]\n" +
+        "destination=expected_user+'@'+expected_host\n" +
+        "try: command_index=next(i for i,arg in enumerate(args) if 'git-receive-pack' in arg or 'git-upload-pack' in arg)\n" +
+        "except StopIteration: sys.exit(126)\n" +
+        "try: words=shlex.split(' '.join(args[command_index:]))\n" +
+        "except ValueError: sys.exit(126)\n" +
+        "if command_index < 1 or len(words)!=2 or words[0] not in ('git-receive-pack','git-upload-pack') or words[1] != expected_path or args[command_index-1] != destination: sys.exit(126)\n" +
+        "try: port_index=args.index('-p')\n" +
+        "except ValueError: port_index=-1\n" +
+        "if expected_port != 22 and (port_index < 0 or args[port_index+1] != str(expected_port)): sys.exit(126)\n" +
+        "if expected_port == 22 and port_index >= 0: sys.exit(126)\n" +
+        "env=os.environ.copy(); env['SSH_AUTH_SOCK']=agent_socket\n" +
+        "os.execvpe('ssh', ['ssh','-o','IdentityAgent='+agent_socket,'-o','StrictHostKeyChecking=accept-new',*args], env)\n")
+    wrapper.chmod(0o700)
+    subprocess.run(["git", "-C", str(project), "config", "core.sshCommand", str(wrapper)], check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def _cleanup_stale_project_backups(parent: Path) -> None:
     cutoff = time.time() - SESSION_TTL_SECONDS
     for backup in parent.glob(".project-backup-*"):
@@ -268,6 +352,23 @@ class UploadHandler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:
         if not self._authorized():
+            return
+        if self.path == "/upload/git-credentials":
+            data = self._body(16 * 1024)
+            if data is None:
+                return
+            try:
+                payload = json.loads(data)
+                remote = payload["remote"]
+                if urlsplit(remote).scheme == "https":
+                    install_git_credentials(remote, payload["credentials"])
+                else:
+                    install_git_ssh_credentials(remote, payload["credentials"])
+            except (ValueError, KeyError, TypeError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as error:
+                self.send_error(400, "Invalid Git credentials or remote association")
+                return
+            self.send_response(204)
+            self.end_headers()
             return
         match = re.fullmatch(r"/upload/sessions/([0-9a-f]{32})/chunks/(\d+)", self.path)
         if match:

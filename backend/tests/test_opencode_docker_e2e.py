@@ -456,6 +456,9 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
             marker_path = os.path.join(project, "upload-marker.txt")
             with open(marker_path, "w", encoding="utf-8") as source:
                 source.write(marker)
+            subprocess.run(["git", "init", "-q", project], check=True)
+            subprocess.run(["git", "-C", project, "remote", "add", "origin",
+                            "https://git.example/team/private.git"], check=True)
             cli_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../cli"))
             installation = subprocess.run(
                 ["uv", "tool", "install", "--python", sys.executable, "--quiet", cli_root],
@@ -486,6 +489,24 @@ def test_upload_cli_isolated_and_deleted_with_managed_container() -> None:
             assert uploaded_once.returncode == 0, (
                 f"CLI direct Tunnel upload failed: exit={uploaded_once.returncode}, "
                 f"stdout={uploaded_once.stdout!r}, stderr={uploaded_once.stderr!r}"
+            )
+            credential_response = httpx.put(
+                payload["upload_url"] + "/git-credentials",
+                headers={"Authorization": f"Bearer {payload['upload_token']}"},
+                json={"remote": "https://git.example/team/private.git",
+                      "credentials": {"username": "e2e-user", "password": "e2e-secret"}},
+                timeout=20,
+            )
+            assert credential_response.status_code == 204, credential_response.text
+            stored_credential = subprocess.run(
+                docker_command("exec", target_id, "sh", "-c",
+                               "test -f /run/opencode/git-credentials && "
+                               "grep -q e2e-secret /run/opencode/git-credentials"),
+                capture_output=True, text=True,
+            )
+            assert stored_credential.returncode == 0, (
+                "container did not retain HTTPS Git credentials in its private runtime path: "
+                f"{stored_credential.stderr!r}"
             )
             oversized_file = os.path.join(project, "oversized.bin")
             with open(oversized_file, "wb") as source:

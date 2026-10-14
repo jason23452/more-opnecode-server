@@ -1,7 +1,7 @@
 FROM node:22-bookworm-slim
 ARG TARGETARCH
 ENV PATH="/root/.local/bin:${PATH}"
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates python3 python3-venv procps nginx && \
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates git openssh-client python3 python3-venv procps nginx && \
     curl -LsSf https://astral.sh/uv/install.sh | sh && \
     uv pip install --system --break-system-packages 'websockets>=13,<16' && \
     npm install --global pnpm opencode-ai @opencode-ai/sdk && \
@@ -15,8 +15,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 COPY tunnel-supervisor.sh /usr/local/bin/tunnel-supervisor.sh
 COPY pty_runner.py /usr/local/bin/opencode-pty-runner
 COPY tui_relay.py /usr/local/bin/opencode-tui-relay.py
+COPY ssh_agent_relay.py /usr/local/bin/opencode-ssh-agent-relay.py
 COPY upload_receiver.py /usr/local/bin/opencode-upload-receiver.py
 COPY ingress.conf /etc/nginx/nginx.conf
 RUN chmod +x /usr/local/bin/tunnel-supervisor.sh
 EXPOSE 4096
-CMD ["sh", "-c", "opencode serve --hostname 127.0.0.1 --port 4096 & opencode_pid=$!; python3 /usr/local/bin/opencode-upload-receiver.py & receiver_pid=$!; python3 /usr/local/bin/opencode-tui-relay.py & tui_pid=$!; /usr/local/bin/tunnel-supervisor.sh & tunnel_pid=$!; nginx -g 'daemon off;' & nginx_pid=$!; wait $opencode_pid; status=$?; kill $receiver_pid $tui_pid $tunnel_pid $nginx_pid 2>/dev/null || true; exit $status"]
+CMD ["sh", "-c", "opencode serve --hostname 127.0.0.1 --port 4096 & opencode_pid=$!; python3 /usr/local/bin/opencode-upload-receiver.py & receiver_pid=$!; python3 /usr/local/bin/opencode-tui-relay.py & tui_pid=$!; python3 /usr/local/bin/opencode-ssh-agent-relay.py & agent_pid=$!; /usr/local/bin/tunnel-supervisor.sh & tunnel_pid=$!; nginx -g 'daemon off;' & nginx_pid=$!; wait $opencode_pid; status=$?; kill $receiver_pid $tui_pid $agent_pid $tunnel_pid $nginx_pid 2>/dev/null || true; exit $status"]

@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import ssl
+import subprocess
 import tempfile
 import time
 import uuid
@@ -13,12 +15,14 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from .agent_socket import ssh_agent_address
 from .tls import create_ssl_context
 
 EXCLUDED_DIRECTORIES = {
-    ".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__",
+    ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__",
     ".next", ".nuxt", "dist", "build", "target", "coverage",
 }
+EXCLUDED_GIT_CREDENTIAL_FILES = {".git/credentials", ".git-credentials"}
 MAX_UPLOAD_BYTES = 95 * 1024 * 1024
 CHUNK_BYTES = 8 * 1024 * 1024
 
@@ -49,7 +53,15 @@ def create_archive(project: Path) -> Path:
                 path = current_path / name
                 if path.is_symlink() or not path.is_file():
                     continue
-                archive.write(path, path.relative_to(root).as_posix())
+                relative = path.relative_to(root).as_posix()
+                if relative in EXCLUDED_GIT_CREDENTIAL_FILES:
+                    continue
+                if relative == ".git/config":
+                    contents = path.read_bytes()
+                    contents = _sanitize_git_config(contents)
+                    archive.writestr(relative, contents)
+                else:
+                    archive.write(path, relative)
     return output_path
 
 
@@ -72,6 +84,109 @@ def _request(url: str, token: str, data: bytes | None = None, method: str = "GET
     request = Request(url, data=data, headers={"Authorization": f"Bearer {token}", **(headers or {})}, method=method)
     with _open_url(request) as response:
         return response.read()
+
+
+def upload_git_credentials(url: str, token: str, remote: str, credentials: dict[str, str], retries: int = 3) -> None:
+    if not url.startswith("https://") or not (remote.startswith("https://") or _ssh_remote(remote)):
+        raise ValueError("Git 認證必須透過 HTTPS 傳送，且 remote 必須使用 HTTPS 或 SSH")
+    payload = json.dumps({"remote": remote, "credentials": credentials}).encode()
+    _retry_request(
+        lambda target: _request(target.removesuffix("/upload") + "/upload/git-credentials", token,
+                                payload, "PUT", {"Content-Type": "application/json"}),
+        retries, url,
+    )
+
+
+def git_https_credentials(project: Path) -> tuple[str, dict[str, str]] | None:
+    try:
+        remote = subprocess.run(
+            ["git", "-C", str(project), "remote", "get-url", "origin"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    if not remote.lower().startswith("https://"):
+        return None
+    from urllib.parse import urlsplit, urlunsplit
+
+    parsed = urlsplit(remote)
+    host = parsed.netloc.rsplit("@", 1)[-1]
+    clean_remote = urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+    prompt = f"protocol=https\nhost={host}\n"
+    if parsed.path.strip("/"):
+        prompt += f"path={parsed.path.lstrip('/')}\n"
+    try:
+        result = subprocess.run(["git", "credential", "fill"], input=prompt + "\n",
+                                capture_output=True, text=True, check=True, cwd=project)
+    except (OSError, subprocess.CalledProcessError):
+        return clean_remote, {}
+    credentials = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    return clean_remote, {key: credentials[key] for key in ("username", "password") if key in credentials}
+
+
+def _ssh_remote(remote: str) -> bool:
+    from urllib.parse import urlsplit
+
+    return (remote.startswith("git@") or remote.startswith("ssh://") or
+            (urlsplit(remote).scheme == "ssh" and bool(urlsplit(remote).hostname)) or
+            bool(re.fullmatch(r"[^@/:]+(?::[^@/:]+)?@[^/:]+:.+", remote)))
+
+
+def sanitize_remote(remote: str) -> str:
+    """Remove embedded secrets while preserving SSH usernames and route components."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    parsed = urlsplit(remote)
+    if parsed.scheme.lower() in {"https", "http", "ssh"} and parsed.hostname:
+        userinfo = f"{parsed.username}@" if parsed.username and parsed.scheme.lower() == "ssh" else ""
+        host = parsed.hostname
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        if parsed.port:
+            host += f":{parsed.port}"
+        netloc = userinfo + host
+        return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+    match = re.fullmatch(r"(?P<userinfo>[^/@]+)@(?P<host>[^/:]+):(?P<path>.+)", remote)
+    if match and ":" in match.group("userinfo"):
+        user = match.group("userinfo").split(":", 1)[0]
+        return f"{user}@{match.group('host')}:{match.group('path')}"
+    return remote
+
+
+def _sanitize_git_config(contents: bytes) -> bytes:
+    contents = re.sub(
+        rb"(?i)(https?://|ssh://)([^:/@\s]+):[^/@\s]*@",
+        rb"\1\2@",
+        contents,
+    )
+    contents = re.sub(rb"(?i)(https?://)[^/@\s]+@", rb"\1", contents)
+    return re.sub(rb"([^\s=:@]+):[^\s/@]+@([^\s/:]+):", rb"\1@\2:", contents)
+
+
+def git_ssh_credentials(project: Path) -> tuple[str, dict[str, str]] | None:
+    """Return the SSH origin only when a local agent has loaded public identities."""
+    try:
+        remote = subprocess.run(
+            ["git", "-C", str(project), "remote", "get-url", "origin"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    if not _ssh_remote(remote):
+        return None
+    remote = sanitize_remote(remote)
+
+    if not ssh_agent_address():
+        return remote, {}
+    try:
+        identities = subprocess.run(["ssh-add", "-L"], capture_output=True, text=True, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return remote, {}
+    available = any(
+        line.startswith(("ssh-", "ecdsa-", "sk-")) and len(line.split()) >= 2
+        for line in identities.stdout.splitlines()
+    )
+    return remote, {"agent_forwarding": True} if available else {}
 
 
 def _retry_request(operation, retries: int, current_url: str) -> bytes:
