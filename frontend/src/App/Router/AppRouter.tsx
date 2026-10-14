@@ -6,6 +6,7 @@ export function AppRouter() {
     <Routes>
       <Route path="/" element={<ContainerDashboard />} />
       <Route path="/containers/create" element={<ContainerDashboard />} />
+      <Route path="/cli" element={<ContainerDashboard />} />
     </Routes>
   )
 }

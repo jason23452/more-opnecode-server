@@ -22,6 +22,11 @@ export type CreatedContainer = {
 
 export type CommandEnvironment = 'mac' | 'windows' | 'linux'
 
+export type CliInstallCommand = {
+  environment: CommandEnvironment
+  command: string
+}
+
 export type ContainerCommands = {
   connect_command?: string | null
 }
@@ -35,6 +40,11 @@ export const containerApi = {
   }),
   getCommands: (containerId: string, environment: CommandEnvironment, token: string) =>
     api.get<ContainerCommands>(`/opencode/containers/${encodeURIComponent(containerId)}`, {
+      params: { environment },
+      headers: { Authorization: `Bearer ${token}` },
+    }),
+  getCliInstallCommand: (environment: CommandEnvironment, token: string) =>
+    api.get<CliInstallCommand>('/opencode/cli-install-command', {
       params: { environment },
       headers: { Authorization: `Bearer ${token}` },
     }),

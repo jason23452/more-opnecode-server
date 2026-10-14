@@ -19,6 +19,27 @@ afterEach(() => {
 afterAll(() => server.close())
 
 describe('容器管理 Dashboard', () => {
+  it('從 CLI 工具分頁取得並複製所選平台的安裝命令', async () => {
+    window.history.replaceState({}, '', '/cli')
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    server.use(http.get('*/opencode/cli-install-command', ({ request }) => {
+      expect(new URL(request.url).searchParams.get('environment')).toBe('windows')
+      expect(request.headers.get('authorization')).toBe('Bearer secret-token')
+      return HttpResponse.json({ environment: 'windows', command: 'irm https://example/install.ps1 | iex' })
+    }))
+    render(<MainApp />)
+
+    expect(await screen.findByRole('heading', { name: 'CLI 工具' })).toBeInTheDocument()
+    await userEvent.type(screen.getByLabelText('管理 token'), 'secret-token')
+    await userEvent.click(screen.getByRole('button', { name: /作業系統/ }))
+    await userEvent.click(await screen.findByRole('option', { name: 'Windows' }))
+    await userEvent.click(screen.getByRole('button', { name: '取得安裝命令' }))
+    expect(await screen.findByText('irm https://example/install.ps1 | iex')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '複製安裝命令' }))
+    expect(writeText).toHaveBeenCalledWith('irm https://example/install.ps1 | iex')
+  })
+
   it('將管理 API 請求送往後端 API 前綴', async () => {
     let requestPath = ''
     server.use(http.get('*/opencode/containers', ({ request }) => {

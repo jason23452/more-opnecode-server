@@ -36,6 +36,8 @@ Status: ready-for-agent
 22. As an 內部管理者, I want 確認刪除後看到操作進行中及結果, so that 我能知道容器是否已成功移除。
 23. As an 內部管理者, I want 刪除成功後從清單移除該容器, so that Dashboard 狀態反映最新管理結果。
 24. As an 內部管理者, I want 建立、清單、單筆查詢及刪除都使用同一個目前頁面管理 token, so that 所有管理操作都符合管理 API 的驗證要求。
+25. As an OpenCode 使用者, I want 從獨立的 CLI 工具分頁選擇本機作業系統, so that 我能取得下載並安裝 CLI 工具的對應命令。
+26. As an OpenCode 使用者, I want 複製所選平台的 CLI 安裝命令, so that 我能在本機終端機安裝並使用 CLI 工具。
 
 ## Implementation Decisions
 
@@ -46,7 +48,9 @@ Status: ready-for-agent
   - `GET /opencode/containers` 取得容器清單；回應含 `id`、`status`（`healthy` 或 `unhealthy`）、`url`、`upload_url`、`connect_url`。
   - `POST /opencode/containers` 建立容器，無 request body；成功回應含 `id`、URL、upload/connect token、平台安裝命令及 upload/connect 命令。
   - `GET /opencode/containers/{container_id}?environment={mac|windows|linux}` 取得指定容器的平台專屬命令；依作業系統提供 `upload_command` 與 `connect_command`。
+  - `GET /opencode/cli-install-command?environment={mac|windows|linux}` 取得平台專屬 CLI 安裝命令；回應含 `environment` 與 `command`。
   - `DELETE /opencode/containers/{container_id}` 刪除受管理容器，成功時回應 `204`。
+- Dashboard 增加獨立「CLI 工具」路由分頁。管理者輸入管理 token、選擇 macOS、Windows 或 Linux 後，前端呼叫 CLI 安裝命令 API，呈現並提供複製安裝命令；此 API 回傳可執行的安裝命令，不回傳二進位檔案串流。
 - 管理 API 路徑以前端既有 runtime API base URL 為基底；管理 API 保持為內網控制面。容器連線與專案上傳仍直接經由容器 Tunnel ingress，不經由管理 API 中繼。
 - 「開啟容器」代表以清單提供的 `connect_url` 開新分頁，不表示透過管理 API 啟動或重啟 Docker 容器。提供平台選擇及單筆查詢以取得可複製的 CLI 連線指令。
 - 建立成功回應中提供的完整資訊呈現於建立結果；可複製 URL、token 與命令。清單本身不應假設含有建立時的 token；平台命令透過單筆查詢取得。
@@ -61,7 +65,7 @@ Status: ready-for-agent
 
 - 好的測試以管理者可觀察的 Dashboard 行為、呈現狀態及實際發出的 HTTP 請求為驗收依據；不耦合 React 元件內部 state、Hook、元件階層或實作細節。
 - 使用者已確認以單一最高層前端頁面整合接縫驗證：在瀏覽器/頁面層操作 Dashboard，攔截管理 API 的 HTTP 請求與回應，檢查畫面和請求行為。若缺少必要工具，新增最小前端測試工具與執行指令。
-- 頁面測試覆蓋路由分頁直達、分頁導覽/瀏覽器歷史、token 不持久化、Bearer header、清單載入與手動重新整理、healthy/unhealthy 呈現、空清單、建立成功與完整結果、平台命令查詢、URL 開新分頁、複製操作、刪除確認及取消/確認、成功後清單更新、401 token 修正重試、其他錯誤及操作進行中狀態。
+- 頁面測試覆蓋路由分頁直達、分頁導覽/瀏覽器歷史、token 不持久化、Bearer header、清單載入與手動重新整理、healthy/unhealthy 呈現、空清單、建立成功與完整結果、容器連線命令查詢、全域 CLI 安裝命令平台查詢/複製、URL 開新分頁、刪除確認及取消/確認、成功後清單更新、401 token 修正重試、其他錯誤及操作進行中狀態。
 - 測試不得依賴真實 Docker daemon、Cloudflare Quick Tunnel 或外部網路；後端契約由既有後端 API 測試負責，前端使用受控 HTTP 回應驗證串接行為。
 - Prior art：目前前端沒有測試 runner、test script 或既有測試檔；後端既有測試使用 FastAPI `TestClient` 驗證外部 HTTP 行為。本功能需建立前端頁面整合測試的最小測試基礎。
 

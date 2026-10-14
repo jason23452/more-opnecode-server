@@ -10,6 +10,7 @@ import { ManagementTokenPanel } from '@/Features/Containers/Components/Managemen
 export function ContainerDashboard() {
   const location = useLocation()
   const isCreate = location.pathname === '/containers/create'
+  const isCli = location.pathname === '/cli'
   const [token, setToken] = useState('')
   const [containers, setContainers] = useState<ManagedContainer[]>([])
   const [hasLoaded, setHasLoaded] = useState(false)
@@ -27,6 +28,11 @@ export function ContainerDashboard() {
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [deleteInProgress, setDeleteInProgress] = useState(false)
   const [deleteSuccess, setDeleteSuccess] = useState('')
+  const [cliEnvironment, setCliEnvironment] = useState<CommandEnvironment | ''>('')
+  const [cliCommand, setCliCommand] = useState('')
+  const [cliLoading, setCliLoading] = useState(false)
+  const [cliError, setCliError] = useState('')
+  const [cliCopyFeedback, setCliCopyFeedback] = useState('')
 
   const loadContainers = useCallback(async () => {
     if (!token.trim() || loading) return
@@ -89,6 +95,31 @@ export function ContainerDashboard() {
     }
   }
 
+  const loadCliInstallCommand = async () => {
+    if (!token.trim() || !cliEnvironment || cliLoading) return
+    setCliLoading(true)
+    setCliError('')
+    setCliCommand('')
+    setCliCopyFeedback('')
+    try {
+      const result = await containerApi.getCliInstallCommand(cliEnvironment, token.trim())
+      setCliCommand(result.command)
+    } catch (cause) {
+      setCliError(managementErrorMessage(cause, '取得 CLI 安裝命令失敗，請稍後重試。'))
+    } finally {
+      setCliLoading(false)
+    }
+  }
+
+  const copyCliInstallCommand = async () => {
+    try {
+      await navigator.clipboard.writeText(cliCommand)
+      setCliCopyFeedback('CLI 安裝命令已複製')
+    } catch {
+      setCliError('複製 CLI 安裝命令失敗。')
+    }
+  }
+
   const copyCommand = async (containerId: string) => {
     try {
       await navigator.clipboard.writeText(commands[containerId])
@@ -122,16 +153,57 @@ export function ContainerDashboard() {
       <div className="mx-auto max-w-5xl">
         <header className="mb-8">
           <p className="text-sm font-semibold text-violet-300">OpenCode 容器管理</p>
-          <h1 className="mt-2 text-3xl font-semibold">{isCreate ? '建立容器' : 'OpenCode 容器'}</h1>
+          <h1 className="mt-2 text-3xl font-semibold">{isCreate ? '建立容器' : isCli ? 'CLI 工具' : 'OpenCode 容器'}</h1>
           <nav aria-label="Dashboard 分頁" className="mt-6 flex gap-5 border-b border-zinc-800 pb-3">
-            <Link className={!isCreate ? 'text-violet-300' : 'text-zinc-400'} to="/">容器清單</Link>
+            <Link className={!isCreate && !isCli ? 'text-violet-300' : 'text-zinc-400'} to="/">容器清單</Link>
             <Link className={isCreate ? 'text-violet-300' : 'text-zinc-400'} to="/containers/create">建立容器</Link>
+            <Link className={isCli ? 'text-violet-300' : 'text-zinc-400'} to="/cli">CLI 工具</Link>
           </nav>
         </header>
 
-        <ManagementTokenPanel token={token} onTokenChange={setToken} onLoad={isCreate ? undefined : loadContainers} loading={loading} hasLoaded={hasLoaded} />
+        <ManagementTokenPanel
+          token={token}
+          onTokenChange={setToken}
+          onLoad={isCreate ? undefined : isCli ? loadCliInstallCommand : loadContainers}
+          loadLabel={isCli ? '取得安裝命令' : undefined}
+          actionDisabled={isCli && !cliEnvironment}
+          loading={isCli ? cliLoading : loading}
+          hasLoaded={isCli ? Boolean(cliCommand) : hasLoaded}
+        />
 
-        {isCreate ? (
+        {isCli ? (
+          <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-6" aria-label="CLI 工具安裝">
+            <h2 className="text-xl font-semibold">下載並安裝 CLI 工具</h2>
+            <p className="mt-2 text-sm text-zinc-400">選擇本機作業系統後取得安裝命令；在終端機執行命令即可下載並安裝 CLI。</p>
+            <div className="mt-4 max-w-xs">
+              <Select
+                label="作業系統"
+                placeholder="選擇作業系統"
+                selectedKeys={cliEnvironment ? [cliEnvironment] : []}
+                onSelectionChange={(keys) => {
+                  const environment = Array.from(keys)[0] as CommandEnvironment | undefined
+                  setCliEnvironment(environment ?? '')
+                  setCliCommand('')
+                  setCliError('')
+                  setCliCopyFeedback('')
+                }}
+              >
+                <SelectItem key="mac">macOS</SelectItem>
+                <SelectItem key="windows">Windows</SelectItem>
+                <SelectItem key="linux">Linux</SelectItem>
+              </Select>
+            </div>
+            {cliLoading && <p className="mt-3" role="status">正在取得 CLI 安裝命令…</p>}
+            {cliError && <p className="mt-3 rounded-lg border border-red-800 bg-red-950/50 p-3 text-red-200" role="alert">{cliError}</p>}
+            {cliCommand && (
+              <div className="mt-4">
+                <code className="block break-all rounded-lg bg-zinc-950 p-3">{cliCommand}</code>
+                <Button className="mt-3" variant="bordered" onPress={copyCliInstallCommand}>複製安裝命令</Button>
+              </div>
+            )}
+            {cliCopyFeedback && <p className="mt-2 text-sm text-green-300" role="status">{cliCopyFeedback}</p>}
+          </section>
+        ) : isCreate ? (
           <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-6">
             <Button isDisabled={!token.trim() || creating} onPress={createContainer}>{creating ? '建立中…' : '建立 OpenCode 容器'}</Button>
             {creating && <p className="mt-3" role="status">正在建立容器…</p>}
