@@ -19,6 +19,20 @@ afterEach(() => {
 afterAll(() => server.close())
 
 describe('容器管理 Dashboard', () => {
+  it('將管理 API 請求送往後端 API 前綴', async () => {
+    let requestPath = ''
+    server.use(http.get('*/opencode/containers', ({ request }) => {
+      requestPath = new URL(request.url).pathname
+      return HttpResponse.json([])
+    }))
+    render(<MainApp />)
+
+    await userEvent.type(screen.getByLabelText('管理 token'), 'secret-token')
+    await userEvent.click(screen.getByRole('button', { name: '載入容器清單' }))
+    expect(await screen.findByText('目前沒有容器')).toBeInTheDocument()
+    expect(requestPath).toBe('/api/opencode/containers')
+  })
+
   it('從建立路由直達並透過分頁與瀏覽器歷史切換', async () => {
     window.history.replaceState({}, '', '/containers/create')
     render(<MainApp />)

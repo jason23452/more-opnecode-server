@@ -15,6 +15,7 @@ npm run dev
 ```
 
 Vite 開發伺服器預設使用 <http://localhost:3000>。
+預設 runtime API URL 為同源 `/api`；Vite 會將 `/api` 請求代理至本機後端 `http://localhost:8000`。
 
 常用指令：
 

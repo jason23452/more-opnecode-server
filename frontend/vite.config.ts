@@ -7,9 +7,16 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   test: {
     environment: 'jsdom',
+    setupFiles: ['./src/Tests/RuntimeConfigSetup.ts'],
   },
   server: {
     port: 3000,
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+    },
   },
   resolve: {
     alias: {
