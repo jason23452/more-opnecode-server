@@ -404,6 +404,48 @@ def test_container_manager_create_applies_configured_cpu_memory_and_capacity_lim
     assert len(token_label.partition("=")[2]) >= 32
 
 
+def test_create_rebuilds_cached_opencode_image_when_build_context_changes() -> None:
+    settings = Settings(opencode_password="secret", opencode_image="dynamic-opencode:latest")
+    manager = ContainerManager(settings)
+    docker_calls: list[tuple[str, ...]] = []
+    image_label = ["old-build-context-digest"]
+    container_count = [0]
+
+    def docker(*args: str, **kwargs) -> CompletedProcess:
+        docker_calls.append(args)
+        if args[:2] == ("ps", "-q"):
+            return CompletedProcess(args, 0, "", "")
+        if args[:2] == ("image", "inspect"):
+            return CompletedProcess(args, 0, image_label[0] + "\n", "")
+        if args[0] == "build":
+            image_label[0] = next(arg.partition("=")[2] for arg in args
+                                  if arg.startswith("dynamic-opencode-build-hash="))
+            return CompletedProcess(args, 0, "", "")
+        if args[0] == "run":
+            container_count[0] += 1
+            return CompletedProcess(args, 0, f"new-container-{container_count[0]}\n", "")
+        if args[0] == "exec":
+            return CompletedProcess(args, 0, "", "")
+        raise AssertionError(f"Unexpected Docker command: {args}")
+
+    manager._docker = Mock(side_effect=docker)
+    manager._read_tunnel_url = Mock(return_value="https://new.trycloudflare.com")
+    manager._healthy = Mock(return_value=True)
+
+    try:
+        created = manager.create()
+        manager.create()
+    finally:
+        manager.close()
+
+    build_indexes = [index for index, call in enumerate(docker_calls) if call[0] == "build"]
+    run_indexes = [index for index, call in enumerate(docker_calls) if call[0] == "run"]
+    assert len(build_indexes) == 1
+    assert build_indexes[0] < run_indexes[0]
+    assert len(run_indexes) == 2
+    assert created["id"] == "new-container-1"
+
+
 def test_create_then_immediate_list_keeps_initialized_tunnel_healthy() -> None:
     manager = ContainerManager(Settings(opencode_password="secret", opencode_admin_token="admin-secret"))
     manager._docker = Mock(side_effect=[

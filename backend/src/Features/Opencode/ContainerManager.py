@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import secrets
@@ -274,10 +275,35 @@ class ContainerManager:
             self._monitor.join(timeout=2)
 
     def _ensure_image(self) -> None:
-        exists = self._docker("image", "inspect", self.settings.opencode_image, check=False)
-        if exists.returncode != 0:
-            dockerfile = Path(__file__).with_name("Dockerfile")
-            self._docker("build", "-t", self.settings.opencode_image, "-f", str(dockerfile), str(dockerfile.parent), timeout=None)
+        dockerfile = Path(__file__).with_name("Dockerfile")
+        context = dockerfile.parent
+        build_digest = self._image_context_digest(context)
+        existing = self._docker(
+            "image", "inspect", "-f",
+            '{{ index .Config.Labels "dynamic-opencode-build-hash" }}',
+            self.settings.opencode_image, check=False,
+        )
+        if existing.returncode == 0 and existing.stdout.strip() == build_digest:
+            return
+        self._docker(
+            "build", "--label", f"dynamic-opencode-build-hash={build_digest}",
+            "-t", self.settings.opencode_image, "-f", str(dockerfile), str(context), timeout=None,
+        )
+
+    @staticmethod
+    def _image_context_digest(context: Path) -> str:
+        digest = hashlib.sha256()
+        for path in sorted(context.rglob("*")):
+            if not path.is_file() or "__pycache__" in path.parts or path.suffix == ".pyc":
+                continue
+            relative = path.relative_to(context).as_posix().encode()
+            digest.update(len(relative).to_bytes(4, "big"))
+            digest.update(relative)
+            digest.update((path.stat().st_mode & 0o777).to_bytes(2, "big"))
+            contents = path.read_bytes()
+            digest.update(len(contents).to_bytes(8, "big"))
+            digest.update(contents)
+        return digest.hexdigest()
 
     @staticmethod
     def _docker(*args: str, check: bool = True, timeout: int | None = 30) -> subprocess.CompletedProcess:
