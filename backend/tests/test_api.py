@@ -1,6 +1,7 @@
 from unittest.mock import Mock
 from subprocess import CompletedProcess
 import threading
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -9,6 +10,20 @@ from src.App.Settings import Settings
 from src.Features.Opencode.ContainerManager import ContainerManager
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def use_deterministic_cli_release_selector():
+    previous = app.state.cli_release_selector
+    selector = Mock()
+    selector.select.return_value = {
+        "tag_name": "cli-v0.1.11",
+        "id": 11,
+        "published_at": "2026-10-16T00:00:00Z",
+    }
+    app.state.cli_release_selector = selector
+    yield
+    app.state.cli_release_selector = previous
 
 
 def test_health_endpoint_returns_ok() -> None:
@@ -75,9 +90,9 @@ def test_create_opencode_waits_for_ready_container_and_hides_password() -> None:
         "upload_url": "https://quiet-fox.trycloudflare.com/upload",
         "upload_token": "container-upload-token",
         "cli_install_commands": {
-            "windows_powershell": "$env:OPENCODE_PROJECT_RELEASE_URL = 'https://github.com/jason23452/more-opnecode-server/releases/latest/download'; irm 'https://github.com/jason23452/more-opnecode-server/releases/latest/download/install.ps1' | iex",
-            "macos": "curl -fsSL 'https://github.com/jason23452/more-opnecode-server/releases/latest/download/install.sh' | OPENCODE_PROJECT_RELEASE_URL='https://github.com/jason23452/more-opnecode-server/releases/latest/download' sh",
-            "linux": "curl -fsSL 'https://github.com/jason23452/more-opnecode-server/releases/latest/download/install.sh' | OPENCODE_PROJECT_RELEASE_URL='https://github.com/jason23452/more-opnecode-server/releases/latest/download' sh",
+            "windows_powershell": "$env:OPENCODE_PROJECT_RELEASE_URL = 'https://github.com/jason23452/more-opnecode-server/releases/download/cli-v0.1.11'; irm 'https://github.com/jason23452/more-opnecode-server/releases/download/cli-v0.1.11/install.ps1' | iex",
+            "macos": "curl -fsSL 'https://github.com/jason23452/more-opnecode-server/releases/download/cli-v0.1.11/install.sh' | OPENCODE_PROJECT_RELEASE_URL='https://github.com/jason23452/more-opnecode-server/releases/download/cli-v0.1.11' sh",
+            "linux": "curl -fsSL 'https://github.com/jason23452/more-opnecode-server/releases/download/cli-v0.1.11/install.sh' | OPENCODE_PROJECT_RELEASE_URL='https://github.com/jason23452/more-opnecode-server/releases/download/cli-v0.1.11' sh",
         },
         "upload_command": "opencode-project upload --url https://quiet-fox.trycloudflare.com/upload --token=container-upload-token --project .",
         "connect_url": "wss://quiet-fox.trycloudflare.com/connect",
@@ -87,7 +102,7 @@ def test_create_opencode_waits_for_ready_container_and_hides_password() -> None:
     assert "shared-secret" not in response.text
 
 
-def test_create_opencode_uses_configured_cli_release_url() -> None:
+def test_create_opencode_does_not_use_legacy_cli_release_url_override() -> None:
     manager = Mock(spec=ContainerManager)
     manager.create.return_value = {
         "id": "oc-123", "url": "https://quiet-fox.trycloudflare.com",
@@ -104,16 +119,16 @@ def test_create_opencode_uses_configured_cli_release_url() -> None:
     assert response.status_code == 201
     assert response.json()["cli_install_commands"] == {
         "windows_powershell": (
-            "$env:OPENCODE_PROJECT_RELEASE_URL = 'https://downloads.example/cli/latest/download'; "
-            "irm 'https://downloads.example/cli/latest/download/install.ps1' | iex"
+            "$env:OPENCODE_PROJECT_RELEASE_URL = 'https://github.com/jason23452/more-opnecode-server/releases/download/cli-v0.1.11'; "
+            "irm 'https://github.com/jason23452/more-opnecode-server/releases/download/cli-v0.1.11/install.ps1' | iex"
         ),
         "macos": (
-            "curl -fsSL 'https://downloads.example/cli/latest/download/install.sh' | "
-            "OPENCODE_PROJECT_RELEASE_URL='https://downloads.example/cli/latest/download' sh"
+            "curl -fsSL 'https://github.com/jason23452/more-opnecode-server/releases/download/cli-v0.1.11/install.sh' | "
+            "OPENCODE_PROJECT_RELEASE_URL='https://github.com/jason23452/more-opnecode-server/releases/download/cli-v0.1.11' sh"
         ),
         "linux": (
-            "curl -fsSL 'https://downloads.example/cli/latest/download/install.sh' | "
-            "OPENCODE_PROJECT_RELEASE_URL='https://downloads.example/cli/latest/download' sh"
+            "curl -fsSL 'https://github.com/jason23452/more-opnecode-server/releases/download/cli-v0.1.11/install.sh' | "
+            "OPENCODE_PROJECT_RELEASE_URL='https://github.com/jason23452/more-opnecode-server/releases/download/cli-v0.1.11' sh"
         ),
     }
 
@@ -773,8 +788,8 @@ def test_cli_install_command_api_returns_command_for_selected_environment() -> N
     assert response.json() == {
         "environment": "mac",
         "command": (
-            "curl -fsSL 'https://downloads.example/cli/latest/download/install.sh' | "
-            "OPENCODE_PROJECT_RELEASE_URL='https://downloads.example/cli/latest/download' sh"
+            "curl -fsSL 'https://github.com/jason23452/more-opnecode-server/releases/download/cli-v0.1.11/install.sh' | "
+            "OPENCODE_PROJECT_RELEASE_URL='https://github.com/jason23452/more-opnecode-server/releases/download/cli-v0.1.11' sh"
         ),
     }
 
@@ -786,16 +801,16 @@ def test_cli_install_command_api_supports_all_environments() -> None:
     )
     expected = {
         "windows": (
-            "$env:OPENCODE_PROJECT_RELEASE_URL = 'https://downloads.example/cli/latest/download'; "
-            "irm 'https://downloads.example/cli/latest/download/install.ps1' | iex"
+            "$env:OPENCODE_PROJECT_RELEASE_URL = 'https://github.com/jason23452/more-opnecode-server/releases/download/cli-v0.1.11'; "
+            "irm 'https://github.com/jason23452/more-opnecode-server/releases/download/cli-v0.1.11/install.ps1' | iex"
         ),
         "mac": (
-            "curl -fsSL 'https://downloads.example/cli/latest/download/install.sh' | "
-            "OPENCODE_PROJECT_RELEASE_URL='https://downloads.example/cli/latest/download' sh"
+            "curl -fsSL 'https://github.com/jason23452/more-opnecode-server/releases/download/cli-v0.1.11/install.sh' | "
+            "OPENCODE_PROJECT_RELEASE_URL='https://github.com/jason23452/more-opnecode-server/releases/download/cli-v0.1.11' sh"
         ),
         "linux": (
-            "curl -fsSL 'https://downloads.example/cli/latest/download/install.sh' | "
-            "OPENCODE_PROJECT_RELEASE_URL='https://downloads.example/cli/latest/download' sh"
+            "curl -fsSL 'https://github.com/jason23452/more-opnecode-server/releases/download/cli-v0.1.11/install.sh' | "
+            "OPENCODE_PROJECT_RELEASE_URL='https://github.com/jason23452/more-opnecode-server/releases/download/cli-v0.1.11' sh"
         ),
     }
 

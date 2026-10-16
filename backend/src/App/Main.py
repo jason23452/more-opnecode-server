@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.App.Settings import get_settings
 from src.Features.Health.Router import router as health_router
 from src.Features.Opencode.ContainerManager import ContainerManager
+from src.Features.Opencode.CliReleases import CliReleaseSelector
 from src.Features.Opencode.Router import cli_router, router as opencode_router
 from src.Shared.Errors.ExceptionHandlers import register_exception_handlers
 from src.Shared.Middleware.RequestIdMiddleware import RequestIdMiddleware
@@ -17,6 +18,7 @@ app = FastAPI(
 )
 app.state.settings = settings
 app.state.container_manager = ContainerManager(settings)
+app.state.cli_release_selector = CliReleaseSelector()
 
 app.add_middleware(
     CORSMiddleware,

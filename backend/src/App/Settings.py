@@ -1,5 +1,5 @@
 from functools import lru_cache
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import field_validator
@@ -35,9 +35,7 @@ class Settings(BaseSettings):
         if value <= 0 or value > cls.MAX_UPLOAD_BYTES:
             raise ValueError("opencode_upload_max_bytes must be between 1 and 99614720 bytes (95 MiB ingress cap)")
         return value
-    opencode_cli_release_url: str = (
-        "https://github.com/jason23452/more-opnecode-server/releases/latest/download"
-    )
+    opencode_cli_channel: Literal["prod", "dev"] = "prod"
 
     model_config = SettingsConfigDict(
         env_file=".env",

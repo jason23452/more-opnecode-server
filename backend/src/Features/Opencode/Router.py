@@ -111,6 +111,22 @@ def _cli_install_commands(release_url: str) -> dict[str, str]:
     }
 
 
+def _selected_release_url(release: dict) -> str:
+    return f"https://github.com/jason23452/more-opnecode-server/releases/download/{release['tag_name']}"
+
+
+def _resolve_cli_release(request: Request) -> dict:
+    try:
+        return request.app.state.cli_release_selector.select(
+            request.app.state.settings.opencode_cli_channel
+        )
+    except Exception as error:
+        raise HTTPException(
+            status_code=503,
+            detail="目前無法取得此 CLI 發布通道的可用版本",
+        ) from error
+
+
 def _cli_install_command(release_url: str, environment: CommandEnvironment) -> str:
     key = {"mac": "macos", "windows": "windows_powershell", "linux": "linux"}[environment]
     return _cli_install_commands(release_url)[key]
@@ -122,6 +138,7 @@ def create_container(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> ContainerCreated:
     _authorize(request, credentials)
+    release = _resolve_cli_release(request)
     try:
         result = request.app.state.container_manager.create()
     except Exception as error:
@@ -130,9 +147,7 @@ def create_container(
     _, connect_url = _tunnel_targets(result["url"])
     return ContainerCreated(
         **result,
-        cli_install_commands=_cli_install_commands(
-            request.app.state.settings.opencode_cli_release_url
-        ),
+        cli_install_commands=_cli_install_commands(_selected_release_url(release)),
         upload_url=result["url"].rstrip("/") + "/upload",
         upload_command=(
             "opencode-project upload --url "
@@ -191,9 +206,10 @@ def get_cli_install_command(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> CliInstallCommand:
     _authorize(request, credentials)
+    release = _resolve_cli_release(request)
     return CliInstallCommand(
         environment=environment,
-        command=_cli_install_command(request.app.state.settings.opencode_cli_release_url, environment),
+        command=_cli_install_command(_selected_release_url(release), environment),
     )
 
 
