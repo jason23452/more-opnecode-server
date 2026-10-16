@@ -1,6 +1,6 @@
 # 03: 接通環境設定並完成 CLI 通道整合驗收
 
-Status: ready-for-agent
+Status: resolved
 
 **所屬規格：** CLI prod／dev 發布與下載通道隔離（cli-release-channels）
 
@@ -10,7 +10,7 @@ Status: ready-for-agent
 
 ## 驗收條件
 
-- [ ] 既有本機後端 `.env` 加入或更新 `OPENCODE_CLI_CHANNEL=dev`，保留其他設定與機密；確認實際 `.env` 未加入版本控制。
+- [x] 既有本機後端 `.env` 加入或更新 `OPENCODE_CLI_CHANNEL=dev`，保留其他設定與機密；確認實際 `.env` 未加入版本控制。
 - [x] 設定範例說明 prod／dev 對應 tag、預設 prod 與本機 dev 使用方式；Compose 將通道設定傳入後端，未設定時為 prod。
 - [x] 清除設定範例與部署設定中可誤導使用者的舊下載 URL 選版方式，文件說明 `OPENCODE_CLI_RELEASE_URL` 不再覆寫通道選版及遷移方法。
 - [x] 文件說明兩種 tag 的發布步驟、dev Pre-release、完整平台支援、最新版本判定、最多 60 秒快取延遲及查詢失敗行為。
@@ -23,8 +23,8 @@ Status: ready-for-agent
 
 ### 驗證紀錄
 
-- 本機：後端 `uv run pytest` 為 96 passed、3 skipped；CLI `uv run --with pytest pytest` 為 61 passed；Compose 與兩個 workflow 均以 PyYAML `BaseLoader` 成功解析。
-- 本機設定檢查：原始工作樹的 `backend/.env` 不存在且未追蹤，因此沒有建立檔案或填入假值；請主 session 在含有原始機密設定的工作樹安全加入 `OPENCODE_CLI_CHANNEL=dev`，並確認 `.env` 維持未追蹤。
+- 本機：後端 `uv run pytest -q` 為 96 passed、3 skipped；CLI `uv run --with pytest --with trustme --with-editable . pytest tests -q` 為 61 passed、7 subtests passed；Compose 與兩個 workflow 均以 PyYAML `BaseLoader` 成功解析。
+- 本機設定檢查：主工作樹既有 `backend/.env` 已安全加入 `OPENCODE_CLI_CHANNEL=dev`，更新時保留其他設定且未輸出內容；已確認 `.env` 仍被 Git 忽略，未納入提交。
 - GitHub Actions 與遠端 Release：本次未推送 tag，未執行遠端 workflow 或發布。
 
 ## 測試與交付說明

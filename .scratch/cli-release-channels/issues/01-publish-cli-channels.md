@@ -1,6 +1,6 @@
 # 01: 建立正式版與開發版 CLI 發布流程
 
-Status: ready-for-agent
+Status: resolved
 
 **所屬規格：** CLI prod／dev 發布與下載通道隔離（cli-release-channels）
 

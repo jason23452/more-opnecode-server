@@ -1,6 +1,6 @@
 # 02: 讓所有 CLI 安裝資訊 API 依 prod／dev 通道選版
 
-Status: ready-for-agent
+Status: resolved
 
 **所屬規格：** CLI prod／dev 發布與下載通道隔離（cli-release-channels）
 
