@@ -45,19 +45,18 @@
 
 - GitHub Release 尚未真實執行。須由維護者依文件推送一個正式或開發 tag 後確認 Actions 工作流程、Release 類型及六項資產。
 - 本機已安裝 CLI 不會自動更新或依後端通道替換；重新取得並執行 API 提供的安裝指令即可切換/更新。
-- Ticket 與整合 branches/worktrees 目前保留，因整合分支尚未經使用者同意合併到 `dev`。
+- 使用者同意後，整合分支已於 2026-10-16 合併至本地 `dev`（fast-forward 至 `59e3b9d`）；本次建立的三個 ticket worktrees、integration worktree 及相應 branches 已確認乾淨並清理。
 
 ## 下一步（依優先順序）
 
-1. 將整合分支 `spec/cli-release-channels` 交付使用者審閱，確認是否合併至 `dev`。
-2. 若合併獲明確同意，先確認所有 ticket checklist 與本 session note 已更新，再只清理本輪建立且已整合的 ticket/integration worktrees 與 branches。
-3. 推送 tag 屬遠端發布操作，需另行決定執行時間並確認 GitHub Actions 結果。
+1. 維護者之後推送正式或開發 tag，確認 GitHub Actions、Release 類型與六項資產，完成尚未執行的遠端發布驗證。
+2. 本輪程式、測試及文件已合併至本地 `dev`；若需要同步遠端，依維護者的 Git 發布流程另行處理。
 
 ## 相關參照
 
 - 規格：`.scratch/cli-release-channels/spec.md`
 - Tickets：`.scratch/cli-release-channels/issues/01-publish-cli-channels.md`、`02-select-cli-channel-in-apis.md`、`03-integrate-channel-configuration.md`
-- Integration branch：`spec/cli-release-channels`
+- 最終整合分支：`dev`（`spec/cli-release-channels` 已合併並清理）
 - Commits：`77a8ece`（Ticket 01）、`15c57ee`（Ticket 02）、`3f0c84f`（Ticket 03）、`4743390`（驗收與 checklist）
 - 主 session 可取得的 implementer sessions：`ses_ebce46028ffeFK2nSLD05fKSEF`（01）、`ses_ebce46009ffeeV6gcbN6m60P1M`（02）、`ses_ebcd17f9cffe6fq4viYVYw3X2w`（03）。Merger sessions：`ses_ebcd664cdffeAnywnNh88LDItL`（01）、`ses_ebcd45135ffecVvFCXP58hmRqc`（02）、`ses_ebcc9ae7affetquk07pMFpJxCD`（03）。Review sessions：`ses_ebcc600c4ffeWXVEAswYLu8ydj`、`ses_ebcc600a6ffer32gp7kStsyjpA`（第一次錯誤工作目錄）、`ses_ebcc5270affewJYeON3pxde3hi`、`ses_ebcc526d3ffealzRwagcj47XPe`（有效 review）。
 - 本機 OpenCode `storage/session` 不存在，且以可用路徑搜尋未找到上述 session 對話記錄；本筆記整合主 session 可見的 subagent 最終回覆及其以檔案、commit、測試驗證的結果，未將無法讀取的內文當作已整理。
