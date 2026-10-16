@@ -28,7 +28,30 @@ curl -fsSL 'https://github.com/jason23452/more-opnecode-server/releases/latest/d
 
 ## 發佈
 
-推送符合 `cli-v*` 格式的 Git tag（例如 `cli-v0.1.0`）會觸發 GitHub Actions，建置 Windows x64、macOS Intel/Apple Silicon 與 Linux x64 執行檔，並連同安裝腳本附加至該 GitHub Release。安裝指令下載 latest Release 的對應資產。
+推送以下任一格式的 Git tag，會由各自的 GitHub Actions workflow 建置並發布 CLI：
+
+```sh
+# 正式版
+git tag cli-v1.2.3
+git push origin cli-v1.2.3
+
+# 開發版（使用唯一版本 tag，例如日期或遞增流水號）
+git tag cli-dev-20261016.1
+git push origin cli-dev-20261016.1
+```
+
+正式版使用 `cli-v*`，發布為一般 GitHub Release 並設為 Latest；開發版使用 `cli-dev-*`，發布為 Pre-release，且明確不會成為正式 Latest。工作流程只由對應 tag 推送觸發，不會因 dev 分支推送發布。請勿讓兩種通道共用 tag。
+
+兩個 workflow 都會在 Windows x64、macOS x64、macOS arm64 與 Linux x64 runner 上執行 CLI 測試、建置獨立執行檔並執行 `--help`。建置成功後先建立 draft Release，確認六項資產齊全再公開：
+
+- `opencode-project-windows-x64.exe`
+- `opencode-project-macos-x64`
+- `opencode-project-macos-arm64`
+- `opencode-project-linux-x64`
+- `install.ps1`
+- `install.sh`
+
+Release 使用觸發 workflow 的原始 tag；任何平台測試、建置或資產檢查失敗時，Release 不會從 draft 公開。推送 tag 後請在 GitHub Actions 確認對應 workflow 成功，再查看該 tag 的 Release 與六項資產。此文件與 workflow 契約已在本機檢查；本次尚未推送 tag，GitHub Actions 實際執行及遠端 Release 尚未驗證。
 
 ## 上傳專案
 

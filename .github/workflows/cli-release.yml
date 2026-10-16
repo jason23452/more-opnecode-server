@@ -68,10 +68,25 @@ jobs:
           pattern: release-*
           path: release-assets
           merge-multiple: true
-      - name: Attach executables and installer scripts to the tag release
+      - name: Create draft release with executables and installer scripts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: >-
-          gh release create "$GITHUB_REF_NAME" release-assets/* cli/install.ps1 cli/install.sh
-          --title "$GITHUB_REF_NAME"
-          --generate-notes
+        run: |
+          set -euo pipefail
+          assets=(
+            release-assets/opencode-project-windows-x64.exe
+            release-assets/opencode-project-macos-x64
+            release-assets/opencode-project-macos-arm64
+            release-assets/opencode-project-linux-x64
+            cli/install.ps1
+            cli/install.sh
+          )
+          for asset in "${assets[@]}"; do
+            test -f "$asset"
+          done
+          gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --draft \
+            --verify-tag
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest
