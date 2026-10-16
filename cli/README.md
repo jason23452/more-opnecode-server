@@ -4,27 +4,19 @@
 
 ## Windows PowerShell 安裝
 
-執行建立容器回應中的 `cli_install_commands.windows_powershell`。也可直接下載並執行安裝腳本：
-
-```powershell
-irm 'https://github.com/jason23452/more-opnecode-server/releases/latest/download/install.ps1' | iex
-```
+執行建立容器回應中的 `cli_install_commands.windows_powershell`，或透過已授權的 `GET /api/opencode/cli-install-command?environment=windows` 取得安裝指令。指令會固定使用目前後端所選 Release 的 tag。
 
 安裝至 `%LOCALAPPDATA%\Programs\opencode-project`，並加入使用者 PATH。
 
 ## macOS 安裝
 
-執行建立容器回應中的 `cli_install_commands.macos`，或使用：
-
-```sh
-curl -fsSL 'https://github.com/jason23452/more-opnecode-server/releases/latest/download/install.sh' | sh
-```
+執行建立容器回應中的 `cli_install_commands.macos`，或透過已授權的 `GET /api/opencode/cli-install-command?environment=mac` 取得安裝指令。指令會固定使用目前後端所選 Release 的 tag。
 
 支援 Intel 與 Apple Silicon；執行檔安裝至 `~/.local/bin`。
 
 ## Linux 安裝
 
-執行建立容器回應中的 `cli_install_commands.linux`；安裝腳本目前提供 Linux x64 執行檔，並安裝至 `~/.local/bin`。
+執行建立容器回應中的 `cli_install_commands.linux`，或透過已授權的 `GET /api/opencode/cli-install-command?environment=linux` 取得安裝指令；安裝腳本目前提供 Linux x64 執行檔，並安裝至 `~/.local/bin`。安裝指令依後端 `OPENCODE_CLI_CHANNEL` 選擇通道，並將安裝腳本與執行檔固定至同一個 Release tag。
 
 ## 發佈
 
@@ -41,6 +33,8 @@ git push origin cli-dev-20261016.1
 ```
 
 正式版使用 `cli-v*`，發布為一般 GitHub Release 並設為 Latest；開發版使用 `cli-dev-*`，發布為 Pre-release，且明確不會成為正式 Latest。工作流程只由對應 tag 推送觸發，不會因 dev 分支推送發布。請勿讓兩種通道共用 tag。
+
+後端以 `OPENCODE_CLI_CHANNEL=prod`（預設）選正式版，以 `OPENCODE_CLI_CHANNEL=dev` 選開發版。切換後端通道不會自動替換已安裝的 CLI；使用者須重新取得並執行該通道提供的安裝指令。兩種通道沿用相同的 `opencode-project` 命令名稱。
 
 兩個 workflow 都會在 Windows x64、macOS x64、macOS arm64 與 Linux x64 runner 上執行 CLI 測試、建置獨立執行檔並執行 `--help`。建置成功後先建立 draft Release，確認六項資產齊全再公開：
 

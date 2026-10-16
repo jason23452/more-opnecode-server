@@ -5,6 +5,8 @@ services:
       dockerfile: Dockerfile
     ports:
       - "${BACKEND_PORT:-8000}:8000"
+    environment:
+      OPENCODE_CLI_CHANNEL: ${OPENCODE_CLI_CHANNEL:-prod}
 
   frontend:
     build:

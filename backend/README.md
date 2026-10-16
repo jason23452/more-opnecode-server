@@ -74,7 +74,7 @@ src/
 | `OPENCODE_TUNNEL_RETRY_INITIAL_DELAY` | `5` | cloudflared 建立失敗（包含 Quick Tunnel 回覆 429）後首次重試等待秒數，採指數退避 |
 | `OPENCODE_TUNNEL_RETRY_MAX_DELAY` | `60` | cloudflared 指數退避的最長等待秒數 |
 | `OPENCODE_UPLOAD_MAX_BYTES` | `99614720`（95 MiB） | 單一上傳請求上限；必須介於 1 byte 至 95 MiB，超過會在 API 設定載入時拒絕。容器 ingress 的 nginx 上限固定為 95 MiB，分塊請求不超過 8 MiB。 |
-| `OPENCODE_CLI_RELEASE_URL` | GitHub 最新 Release assets 網址 | 容器建立回應中各平台 CLI 安裝指令使用的下載來源 |
+| `OPENCODE_CLI_CHANNEL` | `prod` | CLI 發布通道，只允許 `prod` 或 `dev`；本機開發可設為 `dev` |
 
 範例：
 
@@ -82,9 +82,16 @@ src/
 FRONTEND_ORIGINS=["http://localhost:3000","http://127.0.0.1:3000"]
 OPENCODE_PASSWORD=replace-with-a-secret
 OPENCODE_ADMIN_TOKEN=replace-with-an-internal-token
+OPENCODE_CLI_CHANNEL=dev
 ```
 
-管理端點 `POST /api/opencode/containers` 需帶 `Authorization: Bearer <OPENCODE_ADMIN_TOKEN>`。成功回傳 `201`，包含 `id`、OpenCode `url`、`upload_url`、`upload_token`、`cli_install_commands`（`windows_powershell`、`macos`、`linux`）、`upload_command`、`connect_url`、`connect_token` 與 `connect_command`；若初始化失敗或達容器數量上限，回傳 `503`。受保護的容器列表與單筆 GET 會回傳目前 `upload_url` 與 `connect_url`，不帶 `environment` 時不回傳 token 或指令；單筆 GET 可加 `environment=windows|mac|linux`，回傳該平台的 `upload_command` 與 `connect_command`。這兩個指令含容器專屬授權 token，應視同密碼保護。`GET /api/opencode/cli-install-command?environment=windows|mac|linux` 以同一管理者 Bearer 授權回傳 `environment` 與該平台的 CLI 安裝指令。`upload-target` 控制端點已移除。API 不回傳 OpenCode 密碼。各平台安裝指令會從 `OPENCODE_CLI_RELEASE_URL` 下載 GitHub Release 中的獨立執行檔，使用者不需要 Python、uv 或 Node.js。建立符合 `cli-v*` 格式的 Git tag 會觸發 CLI 建置及 Release 發佈流程。Windows 上透過 Docker Desktop 使用時，WSL 後端可自動選用 `docker.exe`，不需 WSL Docker CLI 或啟用 WSL Integration。
+正式環境使用 `prod`（未設定時亦預設為 `prod`），只會選擇非 Pre-release 的 `cli-v*`；本機開發可用 `dev`，只會選擇 `cli-dev-*`，包含 Pre-release。設定範例 `.env.example` 預設為本機開發的 `dev`；複製後部署正式環境前請改成 `prod`。Compose 會將此設定傳給後端，未提供時固定使用 `prod`。
+
+發布正式版時推送 `cli-v*` tag；發布開發版時推送唯一的 `cli-dev-*` tag，該 Release 為 Pre-release 且不會成為正式 Latest。兩種 workflow 都須完成 Windows x64、macOS x64、macOS arm64、Linux x64 建置，以及四個執行檔和 `install.ps1`、`install.sh` 六項資產檢查後才公開 Release。後端按 `published_at` 選擇通道中最新且資產完整的 Release，結果快取最多 60 秒；找不到版本或 GitHub 查詢失敗時，API 回傳 `503`，不會跨通道回退。
+
+`OPENCODE_CLI_RELEASE_URL` 已不再覆寫通道選版；遷移時請從 `.env` 與部署環境移除此舊變數，改設 `OPENCODE_CLI_CHANNEL=prod` 或 `dev`。即使舊變數仍存在，也不會改變 API 選擇的通道；本服務不支援自訂下載鏡像。
+
+管理端點 `POST /api/opencode/containers` 需帶 `Authorization: Bearer <OPENCODE_ADMIN_TOKEN>`。成功回傳 `201`，包含 `id`、OpenCode `url`、`upload_url`、`upload_token`、`cli_install_commands`（`windows_powershell`、`macos`、`linux`）、`upload_command`、`connect_url`、`connect_token` 與 `connect_command`；若初始化失敗或達容器數量上限，回傳 `503`。受保護的容器列表與單筆 GET 會回傳目前 `upload_url` 與 `connect_url`，不帶 `environment` 時不回傳 token 或指令；單筆 GET 可加 `environment=windows|mac|linux`，回傳該平台的 `upload_command` 與 `connect_command`。這兩個指令含容器專屬授權 token，應視同密碼保護。`GET /api/opencode/cli-install-command?environment=windows|mac|linux` 以同一管理者 Bearer 授權回傳 `environment` 與該平台的 CLI 安裝指令。`upload-target` 控制端點已移除。API 不回傳 OpenCode 密碼。CLI 安裝指令會使用所選 Release 的固定 tag 取得安裝腳本與對應平台執行檔；安裝後若要切換或更新版本，須重新取得並執行安裝指令，後端切換通道不會自動替換本機 CLI，命令名稱維持 `opencode-project`。建立符合 `cli-v*` 或 `cli-dev-*` 格式的 Git tag 會觸發各自的 CLI 發佈流程。Windows 上透過 Docker Desktop 使用時，WSL 後端可自動選用 `docker.exe`，不需 WSL Docker CLI 或啟用 WSL Integration。
 
 CLI 安裝後先執行回應中的 `upload_command`，即可將目前專案上傳至容器 `/workspace/project`；再執行 `connect_command` 進入遠端 TUI。也可使用支援的 `--connect-url` 與 `--connect-token` 選項，在上傳後直接連線。CLI 的上傳與 TUI 流量只連至容器 Tunnel，失敗時不會呼叫管理 API；請重新查詢目前 Tunnel URL，並以原容器 token 重跑命令。
 

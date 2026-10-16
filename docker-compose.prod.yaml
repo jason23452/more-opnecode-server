@@ -27,7 +27,7 @@ services:
       OPENCODE_TUNNEL_RECOVERY_DELAY: ${OPENCODE_TUNNEL_RECOVERY_DELAY:-2}
       OPENCODE_TUNNEL_RETRY_INITIAL_DELAY: ${OPENCODE_TUNNEL_RETRY_INITIAL_DELAY:-5}
       OPENCODE_TUNNEL_RETRY_MAX_DELAY: ${OPENCODE_TUNNEL_RETRY_MAX_DELAY:-60}
-      OPENCODE_CLI_RELEASE_URL: ${OPENCODE_CLI_RELEASE_URL:-https://github.com/jason23452/more-opnecode-server/releases/latest/download}
+      OPENCODE_CLI_CHANNEL: ${OPENCODE_CLI_CHANNEL:-prod}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     expose:
